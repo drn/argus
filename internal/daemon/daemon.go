@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,11 +26,13 @@ import (
 	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/clipboard"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/heragater"
+	"github.com/drn/argus/internal/hotkey"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
 	"github.com/drn/argus/internal/kb"
@@ -44,6 +47,9 @@ import (
 	// factory with internal/todo so cfg.Todo.Backend = "things3" resolves.
 	_ "github.com/drn/argus/internal/todo/things3"
 	"github.com/drn/argus/internal/uxlog"
+	"github.com/drn/argus/internal/voice"
+	"github.com/drn/argus/internal/voicetask"
+	"github.com/drn/argus/internal/wispr"
 )
 
 // prPollInterval is the cadence at which the daemon refreshes cached PR review
@@ -220,7 +226,23 @@ type Daemon struct {
 	// -backend-routing). Defaults to backendtier.Probe; tests swap it so
 	// daemon startup never shells out or reads ~/.codex.
 	codexProbe func(context.Context) error
+
+	// voice is the hold-to-talk capture service and voiceTap its global
+	// hotkey; both are created in Serve and guarded by d.mu.
+	voice    *voice.Service
+	voiceTap voiceTap
+
+	// Voice seams; tests swap them so the daemon never execs `open`/osascript
+	// or installs a real event tap.
+	voiceDriver          func(config.VoiceConfig) voice.Driver
+	voiceNotify          func(title, body string)
+	voiceStartTap        func(hotkey.Combo, func(hotkey.Event)) (voiceTap, error)
+	voiceInputGranted    func() bool
+	voiceRequestInput    func() bool
+	voiceHotkeySupported bool
 }
+
+type voiceTap interface{ Close() }
 
 // SupervisorClient is the daemon's view of a live session-supervisor connection:
 // the full agent.SessionRunner surface (so it can BE d.runner), plus the exit
@@ -279,6 +301,13 @@ func New(database *db.DB) *Daemon {
 		prDisableFlagPath: filepath.Join(db.DataDir(), prPollDisableFlag),
 		usageBudgetProbe:  func(ctx context.Context) error { return usagebudget.ProbeConfiguredAccounts(ctx, database.Config()) },
 		codexProbe:        backendtier.Probe,
+
+		voiceDriver:          newWisprDriver,
+		voiceNotify:          voice.NotifyMac,
+		voiceStartTap:        startHotkeyTap,
+		voiceInputGranted:    hotkey.InputMonitoringGranted,
+		voiceRequestInput:    hotkey.RequestInputMonitoring,
+		voiceHotkeySupported: runtime.GOOS == "darwin",
 	}
 
 	// Capture the binary path, hash, and mtime at startup. The on-disk binary
@@ -1536,6 +1565,8 @@ func (d *Daemon) Serve(sockPath string) error {
 		}
 	}
 
+	d.startVoice(cfg)
+
 	// Register RPC service.
 	// Embed the same *sessionCore so the session-scoped RPC methods (promoted
 	// from the core) register under "Daemon" exactly as before.
@@ -1659,6 +1690,8 @@ func (d *Daemon) cleanup() {
 		d.runner.StopAll()
 	}
 
+	d.stopVoice()
+
 	// Stop the scheduler if running.
 	if d.scheduler != nil {
 		d.scheduler.Stop()
@@ -1727,6 +1760,163 @@ func (d *Daemon) cleanup() {
 		d.lockFile.Close() //nolint:errcheck // releasing the lock; close errors are non-actionable
 		d.lockFile = nil
 	}
+}
+
+const voicePermissionHint = "Grant Input Monitoring to argus in System Settings, then restart the daemon"
+
+var newVoiceLauncher = voicetask.NewLauncherFromConfig
+
+func newWisprDriver(vc config.VoiceConfig) voice.Driver {
+	return &wispr.Driver{DBPath: vc.WisprDB}
+}
+
+func startHotkeyTap(combo hotkey.Combo, onEvent func(hotkey.Event)) (voiceTap, error) {
+	t, err := hotkey.StartTap(combo, onEvent)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// startVoice builds the voice capture service and, when [voice] enabled is
+// set, installs the global hotkey tap. [voice] changes need a daemon restart.
+func (d *Daemon) startVoice(cfg config.Config) {
+	vc := cfg.Voice
+	svc := voice.New(d.voiceDriver(vc), d.launchVoiceTask, d.voiceNotify)
+	if vc.TranscriptTimeoutSeconds > 0 {
+		svc.TranscriptTimeout = time.Duration(vc.TranscriptTimeoutSeconds) * time.Second
+	}
+	svc.InputMonitoring = d.voiceInputGranted
+	d.mu.Lock()
+	d.voice = svc
+	d.mu.Unlock()
+
+	name := vc.Hotkey
+	if name == "" {
+		name = config.DefaultVoiceHotkey
+	}
+	if !vc.Enabled {
+		svc.SetHotkey(false, name, false)
+		uxlog.Log("[voice] hotkey disabled; enable with [voice] enabled = true")
+		return
+	}
+	if !d.voiceHotkeySupported {
+		svc.SetHotkey(true, name, false)
+		uxlog.Log("[voice] hotkey unsupported on %s", runtime.GOOS)
+		return
+	}
+	combo, err := hotkey.ParseCombo(name)
+	if err != nil {
+		svc.SetHotkey(true, name, false)
+		uxlog.Log("[voice] invalid hotkey %q: %v", name, err)
+		d.voiceNotify("Argus: voice hotkey invalid", fmt.Sprintf("Check [voice] hotkey %q in config.toml", name))
+		return
+	}
+	if !d.voiceInputGranted() {
+		granted := d.voiceRequestInput()
+		uxlog.Log("[voice] input monitoring not granted; requested granted=%t", granted)
+		if !granted {
+			d.voiceNotify("Argus: voice hotkey needs permission", voicePermissionHint)
+		}
+	}
+	tap, err := d.voiceStartTap(combo, d.handleVoiceHotkey)
+	if err != nil {
+		svc.SetHotkey(true, combo.String(), false)
+		uxlog.Log("[voice] hotkey tap failed combo=%s: %v", combo, err)
+		return
+	}
+	d.mu.Lock()
+	d.voiceTap = tap
+	d.mu.Unlock()
+	svc.SetHotkey(true, combo.String(), true)
+	uxlog.Log("[voice] hotkey tap active combo=%s", combo)
+}
+
+func (d *Daemon) stopVoice() {
+	d.mu.Lock()
+	tap, svc := d.voiceTap, d.voice
+	d.voiceTap = nil
+	d.mu.Unlock()
+	if tap != nil {
+		tap.Close()
+	}
+	if svc != nil {
+		svc.Close()
+	}
+}
+
+func (d *Daemon) voiceService() *voice.Service {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.voice
+}
+
+func (d *Daemon) handleVoiceHotkey(e hotkey.Event) {
+	svc := d.voiceService()
+	if svc == nil {
+		return
+	}
+	switch e {
+	case hotkey.Began:
+		if err := svc.Start(); err != nil {
+			uxlog.Log("[voice] hotkey start failed: %v", err)
+		}
+	case hotkey.Ended:
+		if err := svc.Stop(); err != nil {
+			uxlog.Log("[voice] hotkey stop failed: %v", err)
+		}
+	case hotkey.Cancelled:
+		uxlog.Log("[voice] hotkey cancelled (used as a shortcut)")
+	}
+}
+
+// launchVoiceTask builds the launcher from live config so defaults.voice_project
+// and [voice.jev] edits apply without a restart.
+func (d *Daemon) launchVoiceTask(ctx context.Context, transcript string) (voicetask.Launched, error) {
+	l := newVoiceLauncher(d.db.Config(), d.voiceProjects, d.voiceCreate, d.voiceStamp, voiceTaskName)
+	return l.Launch(ctx, transcript, "")
+}
+
+func (d *Daemon) voiceProjects() ([]string, error) {
+	projects, err := d.db.Projects()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(projects))
+	for name := range projects {
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+func (d *Daemon) voiceCreate(name, prompt, project, backend string) (*model.Task, error) {
+	return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+		Name:     name,
+		Prompt:   prompt,
+		Project:  project,
+		Backend:  backend,
+		AutoName: true,
+	})
+}
+
+func (d *Daemon) voiceStamp(taskID string) error {
+	return d.db.SetMetaBatch(taskID, db.UIMetaNamespace, map[string]string{
+		db.UIMetaKeyNew:    "true",
+		db.UIMetaKeySource: "voice",
+	})
+}
+
+func voiceTaskName(prompt string) string {
+	runes := []rune(prompt)
+	if len(runes) > 40 {
+		runes = runes[:40]
+	}
+	for i, r := range runes {
+		if r == '\n' || r == '\r' || r == '\t' {
+			runes[i] = ' '
+		}
+	}
+	return string(runes)
 }
 
 // writePIDFile atomically writes the current process PID to a file.

@@ -651,3 +651,55 @@ strategy = "headroom"
 	testutil.DeepEqual(t, got.BackendRouting.Tiers, dbTiers)
 	testutil.Equal(t, l.DefinesBackendRoutingTiers(), false)
 }
+
+func TestFileLoader_VoiceConfig(t *testing.T) {
+	t.Run("defaults when absent", func(t *testing.T) {
+		got := NewFileLoader(writeFile(t, "[ui]\ntheme = \"dark\"\n")).Apply(DefaultConfig())
+		testutil.DeepEqual(t, got.Voice, VoiceConfig{
+			Hotkey:                   "right_option",
+			TranscriptTimeoutSeconds: 30,
+			Jev: JevConfig{
+				Endpoint:      "https://api.typesafe.ai/v1/systemone",
+				MinConfidence: 0.7,
+			},
+		})
+	})
+
+	t.Run("full override", func(t *testing.T) {
+		got := NewFileLoader(writeFile(t, `
+[voice]
+enabled = true
+hotkey = "ctrl+option"
+wispr_db = "/tmp/flow.sqlite"
+transcript_timeout_seconds = 45
+
+[voice.jev]
+api_key = "op://Private/TypeSafe/credential"
+endpoint = "https://openrouter.ai/api/alpha/decisions"
+model = "typesafe/jev-1.13"
+min_confidence = 0.85
+`)).Apply(DefaultConfig())
+		testutil.DeepEqual(t, got.Voice, VoiceConfig{
+			Enabled:                  true,
+			Hotkey:                   "ctrl+option",
+			WisprDB:                  "/tmp/flow.sqlite",
+			TranscriptTimeoutSeconds: 45,
+			Jev: JevConfig{ //nolint:gosec // op:// secret reference, not a credential
+				APIKey:        "op://Private/TypeSafe/credential",
+				Endpoint:      "https://openrouter.ai/api/alpha/decisions",
+				Model:         "typesafe/jev-1.13",
+				MinConfidence: 0.85,
+			},
+		})
+	})
+
+	t.Run("partial override keeps other defaults", func(t *testing.T) {
+		got := NewFileLoader(writeFile(t, "[voice]\nenabled = true\n\n[voice.jev]\napi_key = \"JEV_KEY\"\n")).Apply(DefaultConfig())
+		testutil.Equal(t, got.Voice.Enabled, true)
+		testutil.Equal(t, got.Voice.Hotkey, "right_option")
+		testutil.Equal(t, got.Voice.TranscriptTimeoutSeconds, 30)
+		testutil.Equal(t, got.Voice.Jev.APIKey, "JEV_KEY")
+		testutil.Equal(t, got.Voice.Jev.Endpoint, "https://api.typesafe.ai/v1/systemone")
+		testutil.Equal(t, got.Voice.Jev.MinConfidence, 0.7)
+	})
+}

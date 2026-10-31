@@ -1292,6 +1292,14 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         <select class="settings-input" id="default-share-project" style="width: 160px"
                 onchange="saveDefault('share_project', this.value)"></select>
       </div>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Voice task project</div>
+          <div class="meta">Project used by voice-captured tasks when no "in project &lt;name&gt;" is spoken.</div>
+        </div>
+        <select class="settings-input" id="default-voice-project" style="width: 160px"
+                onchange="saveDefault('voice_project', this.value)"></select>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -6127,6 +6135,7 @@ function renderSettings() {
   // Defaults
   fillSelectOptions('default-backend', backendsCache.map(b => b.name), s.defaults.backend, true);
   fillSelectOptions('default-share-project', projectsCache.map(p => p.name), s.defaults.share_project, true);
+  fillSelectOptions('default-voice-project', projectsCache.map(p => p.name), s.defaults.voice_project, true);
   // API
   document.getElementById('api-enabled').checked = !!s.api.enabled;
   const apiFlag = document.getElementById('api-restart-flag');

@@ -358,6 +358,7 @@ type App struct {
 	// switch; bounded and self-healing, the same trade-off class as the
 	// needs-input fleet-batching staleness window.
 	visibleActiveSpinner bool
+	newTasks             newTaskTracker
 	worktreeDir          string // resolved worktree dir for current agent view task
 	lastGitRefresh       time.Time
 	lastTaskGitRefresh   time.Time
@@ -3686,6 +3687,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	prStates := a.readPRStates()
 	managed := a.readManagedTasks()
 	a.tasklist.SetPRStates(prStates)
+	a.syncNewTasks()
 	a.tasklist.SetHeraWorkers(heraWorkers)
 	a.tasklist.SetHeraCoordinators(heraCoordinators)
 	a.tasklist.SetManagedTasks(managed)
@@ -5370,6 +5372,7 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	delete(a.idleUnvisited, task.ID)
 	a.viewedWhileAgent[task.ID] = true
 	a.syncIdleUnvisited()
+	a.clearNewTask(task.ID)
 
 	a.mu.Lock()
 	prevTaskID := a.agentState.TaskID

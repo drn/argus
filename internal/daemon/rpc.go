@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -324,5 +325,64 @@ func (s *RPCService) SetFocused(req *SetFocusedReq, _ *Empty) error {
 		return nil
 	}
 	s.daemon.focusTracker.SetFocused(req.TaskID, req.Focused)
+	return nil
+}
+
+var errVoiceUnavailable = errors.New("voice capture service is not running")
+
+// VoiceStart begins a hold-to-talk recording, as if the hotkey was pressed.
+func (s *RPCService) VoiceStart(_ *Empty, resp *StatusResp) error {
+	svc := s.daemon.voiceService()
+	if svc == nil {
+		resp.Error = logRPCErr("rpc.VoiceStart", errVoiceUnavailable)
+		return nil
+	}
+	uxlog.Log("[voice] rpc start")
+	if err := svc.Start(); err != nil {
+		resp.Error = logRPCErr("rpc.VoiceStart", err)
+		return nil
+	}
+	resp.OK = true
+	return nil
+}
+
+// VoiceStop ends the current recording and launches a task from its
+// transcript in the background, as if the hotkey was released.
+func (s *RPCService) VoiceStop(_ *Empty, resp *StatusResp) error {
+	svc := s.daemon.voiceService()
+	if svc == nil {
+		resp.Error = logRPCErr("rpc.VoiceStop", errVoiceUnavailable)
+		return nil
+	}
+	uxlog.Log("[voice] rpc stop")
+	if err := svc.Stop(); err != nil {
+		resp.Error = logRPCErr("rpc.VoiceStop", err)
+		return nil
+	}
+	resp.OK = true
+	return nil
+}
+
+// VoiceStatus reports the voice capture service's state.
+func (s *RPCService) VoiceStatus(_ *Empty, resp *VoiceStatusResp) error {
+	svc := s.daemon.voiceService()
+	if svc == nil {
+		return nil
+	}
+	st := svc.Status()
+	*resp = VoiceStatusResp{
+		Available:              true,
+		Recording:              st.Recording,
+		Processing:             st.Processing,
+		StartedAt:              st.StartedAt,
+		HotkeyEnabled:          st.HotkeyEnabled,
+		Hotkey:                 st.Hotkey,
+		TapActive:              st.TapActive,
+		InputMonitoringGranted: st.InputMonitoringGranted,
+		LastResult:             st.LastResult,
+		LastDetail:             st.LastDetail,
+		LastTaskID:             st.LastTaskID,
+		LastAt:                 st.LastAt,
+	}
 	return nil
 }

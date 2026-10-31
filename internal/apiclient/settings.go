@@ -30,6 +30,7 @@ type APISettingsJSON struct {
 type DefaultsJSON struct {
 	Backend        string `json:"backend"`
 	ShareProject   string `json:"share_project"`
+	VoiceProject   string `json:"voice_project"`
 	PermissionMode string `json:"permission_mode"`
 }
 
@@ -81,6 +82,7 @@ type APIUpdate struct {
 type DefaultsUpdate struct {
 	Backend        *string `json:"backend,omitempty"`
 	ShareProject   *string `json:"share_project,omitempty"`
+	VoiceProject   *string `json:"voice_project,omitempty"`
 	PermissionMode *string `json:"permission_mode,omitempty"`
 }
 

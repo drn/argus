@@ -73,6 +73,7 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	overrides := map[string]string{
 		"defaults.backend":         "codex",
 		"defaults.share_project":   "argus",
+		"defaults.voice_project":   "forge",
 		"defaults.permission_mode": "acceptEdits",
 		"ui.theme":                 "dark",
 		"ui.spinner":               "braille",
@@ -104,6 +105,7 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 
 	testutil.Equal(t, cfg.Defaults.Backend, "codex")
 	testutil.Equal(t, cfg.Defaults.ShareProject, "argus")
+	testutil.Equal(t, cfg.Defaults.VoiceProject, "forge")
 	testutil.Equal(t, cfg.Defaults.PermissionMode, "acceptEdits")
 	testutil.Equal(t, cfg.UI.Theme, "dark")
 	testutil.Equal(t, cfg.UI.SpinnerStyle, "braille")

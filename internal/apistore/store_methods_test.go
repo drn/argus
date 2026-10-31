@@ -298,6 +298,7 @@ func TestStore_SetConfigValue_KeyMapping(t *testing.T) {
 		{"defaults.backend", "claude"},
 		{"default_backend", "codex"},
 		{"defaults.share_project", "argus"},
+		{"defaults.voice_project", "forge"},
 	}
 	for _, c := range cases {
 		t.Run(c.key, func(t *testing.T) {

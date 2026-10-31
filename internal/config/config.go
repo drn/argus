@@ -56,6 +56,49 @@ type Config struct {
 	// or project backends restrict backend selection but still allow account
 	// routing. Coordinator creation filters tiers to Claude-capable backends.
 	BackendRouting BackendRoutingConfig `toml:"backend_routing"`
+	// Voice configures daemon-owned hold-to-talk task capture via Wispr Flow.
+	// config.toml-only; changes take effect on daemon restart.
+	Voice VoiceConfig `toml:"voice"`
+}
+
+// Voice capture defaults applied by DefaultConfig.
+const (
+	DefaultVoiceHotkey                = "right_option"
+	DefaultVoiceTranscriptTimeoutSecs = 30
+	DefaultJevEndpoint                = "https://api.typesafe.ai/v1/systemone"
+	DefaultJevMinConfidence           = 0.7
+)
+
+// VoiceConfig is the `[voice]` table: the daemon's global hold-to-talk
+// hotkey, the Wispr Flow transcript source, and the optional Jev project
+// classifier.
+type VoiceConfig struct {
+	// Enabled starts the global hotkey event tap in the daemon.
+	Enabled bool `toml:"enabled"`
+	// Hotkey is a modifier-only combo such as "right_option" or "ctrl+option".
+	Hotkey string `toml:"hotkey"`
+	// WisprDB overrides the Wispr Flow flow.sqlite path; empty uses the
+	// app's default location.
+	WisprDB string `toml:"wispr_db"`
+	// TranscriptTimeoutSeconds bounds the wait for Wispr to finish
+	// transcribing after the hotkey is released.
+	TranscriptTimeoutSeconds int       `toml:"transcript_timeout_seconds"`
+	Jev                      JevConfig `toml:"jev"`
+}
+
+// JevConfig configures the TypeSafe Jev decision model used to pick a
+// project when the transcript doesn't name one explicitly.
+type JevConfig struct {
+	// APIKey is a secret SOURCE descriptor (env://, keychain://, op://, or a
+	// bare env var name) resolved at use, never the key itself. Empty
+	// disables Jev.
+	APIKey   string `toml:"api_key"`
+	Endpoint string `toml:"endpoint"`
+	// Model is sent only when non-empty (e.g. "typesafe/jev-1.13" for the
+	// OpenRouter endpoint).
+	Model string `toml:"model"`
+	// MinConfidence is the minimum probability of the chosen project.
+	MinConfidence float64 `toml:"min_confidence"`
 }
 
 // Probe kinds a BackendTier.Probe may name. Dispatch on these is a
@@ -257,6 +300,9 @@ type Defaults struct {
 	// the PWA share target lands a payload (iOS/Android share sheet → /share).
 	// Empty falls back to the currently expanded project folder.
 	ShareProject string `toml:"share_project"`
+	// VoiceProject is the project a voice-captured task lands in when the
+	// transcript does not name one via "in project <name>".
+	VoiceProject string `toml:"voice_project"`
 	// PermissionMode controls the permission flags injected into Claude-style
 	// backend commands by agent.BuildCmd (one of the PermissionModes values).
 	// It is NOT baked into the backend command string — see PermissionModeFlags.
@@ -541,6 +587,14 @@ func DefaultConfig() Config {
 			// them. Only an explicit "false" in DB/toml rolls back to the
 			// retained in-process runner path.
 			Enabled: true,
+		},
+		Voice: VoiceConfig{
+			Hotkey:                   DefaultVoiceHotkey,
+			TranscriptTimeoutSeconds: DefaultVoiceTranscriptTimeoutSecs,
+			Jev: JevConfig{
+				Endpoint:      DefaultJevEndpoint,
+				MinConfidence: DefaultJevMinConfidence,
+			},
 		},
 	}
 }
