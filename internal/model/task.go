@@ -53,14 +53,14 @@ type Task struct {
 	// AccountAuto is true when Account was picked by "auto" usage-based
 	// selection rather than chosen deliberately (add-account-auto-routing).
 	AccountAuto bool      `json:"account_auto,omitempty"`
-	Sandboxed  bool      `json:"sandboxed,omitempty"`
-	Archived   bool      `json:"archived,omitempty"`
-	Pinned     bool      `json:"pinned,omitempty"`
-	BaseBranch string    `json:"base_branch,omitempty"`
-	Result     string    `json:"result,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	EndedAt    time.Time `json:"ended_at,omitempty"`
+	Sandboxed   bool      `json:"sandboxed,omitempty"`
+	Archived    bool      `json:"archived,omitempty"`
+	Pinned      bool      `json:"pinned,omitempty"`
+	BaseBranch  string    `json:"base_branch,omitempty"`
+	Result      string    `json:"result,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	EndedAt     time.Time `json:"ended_at,omitempty"`
 }
 
 // Elapsed returns the duration since the task was started.
