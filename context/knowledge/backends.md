@@ -26,6 +26,7 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 | Session switcher | yes | — | — | — | — | — | yes |
 | Bridge mod | `--plugin-dir` | — | — | — | — | — | — |
 | Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — | — |
+| Cost source | Stop hook + bridge mod | daemon rollout sweeper | — (n/a) | — (n/a) | — (n/a) | — (n/a) | Stop hook |
 
 Rows map to `Family` fields: Session ID → `PinsSessionID`, Resume → `ResumeFlag`/`ResumeCmd`,
 Capture → `Capture`, Recapture → `RecaptureEveryExit`, Resume availability → `ResumeAvailable`, Prompt → `DefaultPromptFlag`/
@@ -33,9 +34,11 @@ Capture → `Capture`, Recapture → `RecaptureEveryExit`, Resume availability �
 `PermissionFlags`/`PermissionFlagTokens`, Launch flag → `LaunchFlag`, MCP → `MCPFlag`/`InjectGlobal`,
 Skills → `SkillDelivery`, Routing → `RoutingDelivery`, Sandbox grant → `SandboxGrants`/
 `SandboxGrantsLaunchOnly`/`PrecreateSandboxGrants`, Session switcher → `SessionSwitcher`,
-Prelaunch → `Prelaunch`/`StartTimeout`, Bridge mod → `BridgeMod`.
+Prelaunch → `Prelaunch`/`StartTimeout`, Bridge mod → `BridgeMod`, Cost source → `CostSource`.
 
 ## Why the non-obvious cells are what they are
+
+- **Codex cost comes from the daemon, not the session.** Codex runs neither the Claude Stop hook nor the bridge mod, so `internal/codexcost` (a 60s daemon sweeper) reads the task's Codex rollout files via `state_5.sqlite` `threads.cwd` and prices each call into the hera binding. Pi/opencode/agy/cursor have no cost source yet — their roles show "n/a" (named follow-up in `add-codex-cost-accrual`).
 
 - **Bridge mod is Claude-only.** Mods are a Claude Code feature; BuildCmd appends `--plugin-dir <argus-bridge dir>` for `Family.BridgeMod` families when `[bridge] enabled`. Every other family keeps screen-reading as its state source. See `gotchas/bridge.md`.
 

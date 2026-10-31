@@ -80,7 +80,7 @@ cache_write_1h = 5.00
 output = 15.00
 ```
 
-A new `Table.PriceCall(model, deltas, callInputTokens)` uses the `long_context` rates when `threshold > 0 && callInputTokens > threshold`, otherwise the base rates. The comparison uses the call's total `input_tokens`, cached included, matching how the provider measures prompt size. The existing `PriceDelta` is unchanged, so the Claude path is unaffected.
+A shared `pricing.LoadInstalled(libraryPath, worktree)` now holds the install-then-load precedence that the PUT handler and the sweeper both use. A new `Table.PriceCall(model, deltas, callInputTokens)` uses the `long_context` rates when `threshold > 0 && callInputTokens > threshold`, otherwise the base rates. The comparison uses the call's total `input_tokens`, cached included, matching how the provider measures prompt size. The existing `PriceDelta` is unchanged, so the Claude path is unaffected.
 
 ### D4. Per-(binding, rollout) byte-offset cursor; accrual and cursor advance in one transaction
 
@@ -109,7 +109,7 @@ A call is accrued to a binding only if its event `timestamp` is ≥ `binding.sta
 
 `agent.Family` gains `CostSource` (`CostSourceNone` default, `CostSourceClaudeHook`, `CostSourceCodexRollout`). The DB returns bindings with `ended_at IS NULL OR ended_at > now − 15m`. The sweeper keeps those whose task's family reports `CostSourceCodexRollout`, so it never branches on backend identity outside `backends.go`, per AGENTS.md.
 
-The 15-minute grace window lets the final calls before a binding ended get read. A Claude binding is never touched, so there is no interaction with the transcript and bridge sources or their source-handoff logic in `hera_bridge_cost`.
+The 15-minute grace window lets the final calls before a binding ended get read. A live binding whose task is concurrently bound under 2+ orchestrators is skipped, matching the Stop-hook PUT handler's `ErrHeraAmbiguous` rejection, because charging both would double-count. A Claude binding is never touched, so there is no interaction with the transcript and bridge sources or their source-handoff logic in `hera_bridge_cost`.
 
 ### D7. Cadence: daemon goroutine, 60s tick plus once at startup
 

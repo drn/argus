@@ -8,7 +8,7 @@ Each de-duplicated `token_count` event carrying a non-null `last_token_usage` SH
 
 Each call SHALL be priced individually, at the moment it is first observed, against the rate table entry keyed by the model recorded in the rollout's most recent `turn_context` event preceding that call. The resulting USD and raw tokens SHALL be ADDED to the binding's `cost_usd_accrued` and raw token columns. A call whose recorded model has no rate-table entry SHALL advance the raw token columns but add no USD, and SHALL never be priced later.
 
-The daemon SHALL run this accrual periodically, at least once per minute and once at daemon startup. It SHALL sweep bindings that are live or that ended within the last 15 minutes. It SHALL NOT touch bindings whose family declares any other cost source, so Codex accrual never interacts with Stop-hook or bridge accounting.
+The daemon SHALL run this accrual periodically, at least once per minute and once at daemon startup. It SHALL sweep bindings that are live or that ended within the last 15 minutes. It SHALL NOT touch bindings whose family declares any other cost source, so Codex accrual never interacts with Stop-hook or bridge accounting. A live binding whose task currently holds more than one live hera binding (bound under two or more orchestrators) SHALL be skipped, because there is no single binding to charge. This mirrors the Stop-hook endpoint's ambiguous-binding rejection.
 
 #### Scenario: A Codex worker's calls accrue cost
 
@@ -34,6 +34,11 @@ The daemon SHALL run this accrual periodically, at least once per minute and onc
 
 - **WHEN** a Codex call is recorded under a model with no rate-table entry
 - **THEN** the binding's raw token columns advance by that call's usage and `cost_usd_accrued` is unchanged, and adding a rate for that model later does not price that call
+
+#### Scenario: A task bound under two orchestrators is skipped
+
+- **WHEN** a Codex-backend task holds live hera bindings under two orchestrators at once
+- **THEN** the sweeper accrues nothing to either binding
 
 #### Scenario: Claude bindings are never swept
 
