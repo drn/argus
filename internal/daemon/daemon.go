@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/clipboard"
+	"github.com/drn/argus/internal/codexcost"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/gitutil"
@@ -72,6 +73,22 @@ const usageBudgetProbeInterval = 30 * time.Minute
 // existing pollers' order of magnitude (prPollInterval's 60s tick vs.
 // usageBudgetProbeInterval's 30m) rather than the short end.
 const heraReclaimSweepInterval = 30 * time.Minute
+
+// codexCostSweepInterval is the cadence of the Codex rollout cost sweeper
+// (add-codex-cost-accrual). Each sweep reads only bytes appended since the
+// last one, so a short tick keeps Codex roles' displayed cost near-live.
+var codexCostSweepInterval = time.Minute
+
+// codexCostSweepFn runs one Codex cost sweep. Nil under `go test` (like
+// injectGlobalBackendConfig) so ephemeral test daemons never read the
+// developer's real ~/.codex or install ~/.argus/rates.toml; tests that drive
+// the loop swap in their own.
+var codexCostSweepFn = func() func(*Daemon) {
+	if strings.HasSuffix(os.Args[0], ".test") {
+		return nil
+	}
+	return func(d *Daemon) { codexcost.New(d.db).Sweep() }
+}()
 
 // DefaultSocketPath returns the default Unix socket path.
 func DefaultSocketPath() string {
@@ -1087,6 +1104,38 @@ func (d *Daemon) runHeraReclaimSweeper() {
 	}
 }
 
+// runCodexCostSweeper is the Codex rollout cost sweeper goroutine body
+// (add-codex-cost-accrual): one sweep at startup, then one per
+// codexCostSweepInterval until d.done closes. Codex never runs the Claude
+// Stop hook or bridge mod, so this is the only path that prices Codex roles.
+// A panicking sweep is logged and the loop continues.
+func (d *Daemon) runCodexCostSweeper() {
+	sweep := codexCostSweepFn
+	if sweep == nil {
+		return
+	}
+	run := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("[codexcost] sweep panicked", "panic", r)
+			}
+		}()
+		sweep(d)
+	}
+	ticker := time.NewTicker(codexCostSweepInterval)
+	defer ticker.Stop()
+
+	run()
+	for {
+		select {
+		case <-d.done:
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
 // injectGlobalBackendConfig runs every backend family's InjectGlobal hook
 // (OpenCode's MCP entry; Antigravity's MCP entry and skills manifest).
 // Skipped under `go test` so ephemeral test daemons never edit the
@@ -1327,6 +1376,11 @@ func (d *Daemon) Serve(sockPath string) error {
 	// this catches a reclaim goroutine lost mid-session without requiring a
 	// daemon restart. Idempotent; a no-op tick when there are no candidates.
 	go d.runHeraReclaimSweeper()
+
+	// Codex rollout cost sweeper (add-codex-cost-accrual). Prices every call
+	// recorded in Codex-backend hera workers' rollout files into their
+	// bindings' cost columns — the Codex counterpart of the Claude Stop hook.
+	go d.runCodexCostSweeper()
 
 	// Finished-session reaper (stop-finished-task-sessions). Stops the agent
 	// session of any complete or archived task once it has idled for two
