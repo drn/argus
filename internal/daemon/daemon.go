@@ -1514,6 +1514,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			// the MCP server (KB.Enabled) and the REST API are up.
 			if d.mcpServer != nil {
 				d.mcpServer.SetAPIGetter(apiSrv.ReadOnlyGet)
+				d.mcpServer.SetAccountMover(apiSrv.MoveTaskAccount)
 			}
 			// Wire the events.Sink to the API server's event bus so emission
 			// sites (db, orch, runner, this file) feed /api/events/stream.

@@ -658,3 +658,10 @@ func (s *Store) PruneCompleted(ctx context.Context) (pruned, worktrees, orphans,
 func (s *Store) Accounts(ctx context.Context) ([]apiclient.AccountJSON, error) {
 	return s.c.ListAccounts(ctx)
 }
+
+// MoveTaskAccount moves a task to another account on the remote daemon via
+// POST /api/tasks/{id}/account. NOT part of tui/store.Store — the local path
+// calls agent.MoveTaskAccount directly.
+func (s *Store) MoveTaskAccount(ctx context.Context, id, account string, force bool) (*apiclient.MoveAccountResp, error) {
+	return s.c.MoveTaskAccount(ctx, id, account, force)
+}

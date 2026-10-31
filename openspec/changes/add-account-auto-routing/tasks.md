@@ -35,9 +35,9 @@
 - [x] 6.1 Tests first (`t.TempDir()` HOME, fake runner): `PrepareAccountMove` rejections (unknown task, non-Claude, same account, unsupported/unknown target, `auto` with no candidate, busy session without force) leave no side effects; busy session with force proceeds; no model turn or agent tool call is involved
 - [x] 6.2 Tests first: a successful move stops a live idle session, copies `<sid>.jsonl` + `<sid>/` into the target's `projects/<enc>/` (overwriting an older copy, source kept), persists account + clears the flag, and returns `{from, to, resumed:true}`; missing transcript → session ID cleared, `resumed:false`
 - [x] 6.3 Implement `internal/agent/accountmove.go` (`RefreshResumeSessionID` first, stop + bounded wait, `BootstrapClaudeConfigDir`, copy, persist) with `[account]` logs
-- [ ] 6.4 Tests first + implement `POST /api/tasks/{id}/account` (404 / 409 unless `force` / 400 / 500 mapping, restart shares the `handleRestartTask` body via an extracted helper)
-- [ ] 6.5 Tests first + implement MCP `task_move_account` (self-move rejection, `force`, error mapping, description text)
-- [ ] 6.6 `apiclient` + `apistore` `MoveTaskAccount` for remote mode, with a test against an httptest server
+- [x] 6.4 Tests first + implement `POST /api/tasks/{id}/account` (404 / 409 unless `force` / 400 / 500 mapping, restart shares the `handleRestartTask` body via an extracted helper)
+- [x] 6.5 Tests first + implement MCP `task_move_account` (self-move rejection, `force`, error mapping, description text)
+- [x] 6.6 `apiclient` + `apistore` `MoveTaskAccount` for remote mode, with a test against an httptest server
 
 ## 7. REST accounts listing
 

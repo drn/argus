@@ -530,3 +530,28 @@ func readBody(r *http.Request) string {
 	n, _ := r.Body.Read(buf)
 	return string(buf[:n])
 }
+
+func TestStore_MoveTaskAccount(t *testing.T) {
+	f := newFakeAPI(t)
+	var captured string
+	f.mux.HandleFunc("/api/tasks/t1/account", func(w http.ResponseWriter, r *http.Request) {
+		testutil.Equal(t, r.Method, "POST")
+		captured = readBody(r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"from":"default","to":"personal","resumed":true,"started":true}`))
+	})
+	got, err := f.store().MoveTaskAccount(context.Background(), "t1", "auto", true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, *got, apiclient.MoveAccountResp{From: "default", To: "personal", Resumed: true, Started: true})
+	testutil.Contains(t, captured, `"account":"auto"`)
+	testutil.Contains(t, captured, `"force":true`)
+}
+
+func TestStore_MoveTaskAccount_Error(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks/t1/account", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"agent is working"}`, http.StatusConflict)
+	})
+	_, err := f.store().MoveTaskAccount(context.Background(), "t1", "personal", false)
+	testutil.Error(t, err)
+}
