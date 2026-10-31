@@ -1,8 +1,11 @@
 # account-move Specification
 
 ## Purpose
-TBD - created by archiving change add-account-move. Update Purpose after archive.
+
+Move a running Claude task's conversation to another account in place, so an agent stuck on one account's usage limit can continue on an account with budget.
+
 ## Requirements
+
 ### Requirement: A Claude task can be moved to another account
 
 The system SHALL provide an account-move operation for a task on a Claude backend. The target SHALL be a configured account, `default`, or `auto`. For `auto` the system SHALL choose, among the accounts that support the backend (`default` first, then configured names in sorted order) excluding the task's current account, the one with the lowest current Claude usage, where an account's usage is the fuller of its currently valid 5-hour and weekly readings and an account with no valid reading counts as 0%, ties going to candidate order.
