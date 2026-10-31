@@ -24,6 +24,7 @@ func accountCreateServer(t *testing.T) (*Server, *TaskCreateInput) {
 		mockTaskDB: &mockTaskDB{tasks: []*model.Task{
 			{ID: "caller1", Name: "caller", Project: "myapp", Account: "work", Worktree: "/tmp/worktrees/myapp/caller"},
 			{ID: "plain1", Name: "plain", Project: "myapp", Worktree: "/tmp/worktrees/myapp/plain"},
+			{ID: "auto1", Name: "auto", Project: "myapp", Account: "personal", AccountAuto: true, Worktree: "/tmp/worktrees/myapp/auto"},
 		}},
 		cfg: config.Config{Accounts: map[string]config.Account{
 			"work":     {ClaudeConfigDir: "/tmp/work"},
@@ -52,6 +53,8 @@ func TestTaskCreate_Account(t *testing.T) {
 		{name: "explicit overrides caller", args: `{"caller_id":"caller1","account":"personal"}`, wantAccount: "personal"},
 		{name: "explicit default overrides caller", args: `{"caller_id":"caller1","account":"default"}`, wantAccount: "default"},
 		{name: "default-account caller pins default", args: `{"caller_id":"plain1"}`, wantAccount: "default", wantInherited: true},
+		{name: "auto-routed caller passes auto", args: `{"caller_id":"auto1"}`, wantAccount: "auto", wantInherited: true},
+		{name: "explicit auto accepted", args: `{"account":"auto"}`, wantAccount: "auto"},
 		{name: "unresolvable caller inherits nothing", args: `{"cwd":"/nowhere"}`},
 		{name: "unknown explicit account rejected", args: `{"account":"nope"}`, wantErr: "unknown account"},
 	} {

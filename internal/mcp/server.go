@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
@@ -1578,11 +1579,8 @@ func (s *Server) taskCreateAccount(explicit, callerID, cwd string) (account stri
 		return "", false, nil
 	}
 	// A default-account caller is stored as ""; pin it so the child does not
-	// drift to the project/global default.
-	account = caller.Account
-	if account == "" {
-		account = config.DefaultAccountName
-	}
+	// drift to the project/global default. An auto-routed caller passes "auto".
+	account = agent.InheritAccount(caller)
 	log.Printf("[mcp] task_create: inheriting account %q from caller %s", account, caller.ID)
 	return account, true, nil
 }

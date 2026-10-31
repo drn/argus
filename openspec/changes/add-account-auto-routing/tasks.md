@@ -1,27 +1,27 @@
 ## 1. Config
 
-- [ ] 1.1 Tests first: `auto` accepted by `ValidateAccount` / `ResolveAccount` for `default_account`, `project_accounts`, explicit; `[accounts.auto]` invalid; `AccountNames` excludes `auto`; `[account_routing]` thresholds parse with default 90 and out-of-range → default + warning
-- [ ] 1.2 Add `config.AutoAccountName`, the reserved-name handling, and `AccountRouting{FiveHourThresholdPct, WeeklyThresholdPct}` with toml loading and accessors
+- [x] 1.1 Tests first: `auto` accepted by `ValidateAccount` / `ResolveAccount` for `default_account`, `project_accounts`, explicit; `[accounts.auto]` invalid; `AccountNames` excludes `auto`; `[account_routing]` thresholds parse with default 90 and out-of-range → default + warning
+- [x] 1.2 Add `config.AutoAccountName`, the reserved-name handling, and `AccountRouting{FiveHourThresholdPct, WeeklyThresholdPct}` with toml loading and accessors
 
 ## 2. Usage ledger and selection (`internal/accountusage`)
 
-- [ ] 2.1 Tests first: `Record` keeps the newest reading per (account, window), ignores invalid/past readings, and `Snapshot` drops readings past `resets_at` (injected clock); `""` normalizes to `default`
-- [ ] 2.2 Tests first: `Pick` over the spec scenarios (capped skipped, weekly counts, unknown available, all unknown → first, all over threshold → least over + flag, tie → candidate order, exclude list)
-- [ ] 2.3 Implement `Ledger` (mutex, clock seam) and the pure `Pick(thresholds, candidates, snapshot, exclude)` returning the choice and scores
+- [x] 2.1 Tests first: `Record` keeps the newest reading per (account, window), ignores invalid/past readings, and `Snapshot` drops readings past `resets_at` (injected clock); `""` normalizes to `default`
+- [x] 2.2 Tests first: `Pick` over the spec scenarios (capped skipped, weekly counts, unknown available, all unknown → first, all over threshold → least over + flag, tie → candidate order, exclude list)
+- [x] 2.3 Implement `Ledger` (mutex, clock seam) and the pure `Pick(thresholds, candidates, snapshot, exclude)` returning the choice and scores
 
 ## 3. Persistence
 
-- [ ] 3.1 Tests first: `tasks.account_auto` round-trips through `Add` / `Get` / `Update` / `Tasks`, and the migration adds the column to an existing DB with default 0
-- [ ] 3.2 Add `Task.AccountAuto`, the column migration, scan/insert/update wiring, and `account_auto` in task JSON / raw shapes
+- [x] 3.1 Tests first: `tasks.account_auto` round-trips through `Add` / `Get` / `Update` / `Tasks`, and the migration adds the column to an existing DB with default 0
+- [x] 3.2 Add `Task.AccountAuto`, the column migration, scan/insert/update wiring, and `account_auto` in task JSON / raw shapes
 
 ## 4. Creation-time resolution and inheritance
 
-- [ ] 4.1 Tests first: `resolveTaskAccount` with `auto` (explicit, project, global) stores the `Pick` choice and sets `AccountAuto`; project pin beats global `auto`; non-auto resolution leaves the flag false; empty `AccountUsageSource` → `default`
-- [ ] 4.2 Tests first: backend-tier `claude_usage` reads the account `auto` would pick for Claude (D5)
-- [ ] 4.3 Implement `agent.AccountUsageSource` seam + the `auto` branch in `resolveTaskAccount` / `resolveDefaultBackendName`, logging the choice and scores under `[account]`
-- [ ] 4.4 Tests first: `resolveOrchestratorAccount` returns `auto` for an auto-routed coordinator and the verbatim pin otherwise; fork keeps account + flag
-- [ ] 4.5 Implement the inheritance change in `hera_spawn.go` and fork
-- [ ] 4.6 Tests first + implement: MCP `task_create` caller inheritance passes `auto` for an auto-routed caller; explicit `"auto"` accepted
+- [x] 4.1 Tests first: `resolveTaskAccount` with `auto` (explicit, project, global) stores the `Pick` choice and sets `AccountAuto`; project pin beats global `auto`; non-auto resolution leaves the flag false; empty `AccountUsageSource` → `default`
+- [x] 4.2 Tests first: backend-tier `claude_usage` reads the account `auto` would pick for Claude (D5)
+- [x] 4.3 Implement `agent.AccountUsageSource` seam + the `auto` branch in `resolveTaskAccount` / `resolveDefaultBackendName`, logging the choice and scores under `[account]`
+- [x] 4.4 Tests first: `resolveOrchestratorAccount` returns `auto` for an auto-routed coordinator and the verbatim pin otherwise; fork keeps account + flag
+- [x] 4.5 Implement the inheritance change in `hera_spawn.go` and fork
+- [x] 4.6 Tests first + implement: MCP `task_create` caller inheritance passes `auto` for an auto-routed caller; explicit `"auto"` accepted
 
 ## 5. Daemon wiring
 

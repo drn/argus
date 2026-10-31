@@ -2791,3 +2791,48 @@ func TestDB_TaskModelRoundTrip(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, got2.Model, "opus")
 }
+
+func TestDB_AccountAutoRoundTrips(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "auto task", Account: "personal", AccountAuto: true}
+	testutil.NoError(t, d.Add(task))
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Account, "personal")
+	testutil.Equal(t, got.AccountAuto, true)
+
+	got.AccountAuto = false
+	testutil.NoError(t, d.Update(got))
+	got2, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got2.AccountAuto, false)
+
+	all, err := d.Tasks()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(all), 1)
+	testutil.Equal(t, all[0].AccountAuto, false)
+
+	plain := &model.Task{Name: "plain task"}
+	testutil.NoError(t, d.Add(plain))
+	got3, err := d.Get(plain.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got3.AccountAuto, false)
+}
+
+func TestCreateTables_AddsAccountAutoToExistingDB(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.Add(&model.Task{Name: "pre-existing", Account: "personal"}))
+
+	// Recreate the pre-change shape: tasks without account_auto.
+	_, err := d.conn.Exec(`ALTER TABLE tasks DROP COLUMN account_auto`)
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d.createTables())
+
+	all, err := d.Tasks()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(all), 1)
+	testutil.Equal(t, all[0].Account, "personal")
+	testutil.Equal(t, all[0].AccountAuto, false)
+}

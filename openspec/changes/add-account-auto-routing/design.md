@@ -50,7 +50,7 @@ A small concurrency-safe store: `Record(account, window, pct, resetsAt, measured
 
 ### D6. Inheritance
 
-`resolveOrchestratorAccount` returns `auto` (instead of `PinnedAccount(t.Account)`) when the coordinator task has `AccountAuto`. MCP `task_create` caller inheritance does the same. An explicit `auto` re-runs selection, and the new task is flagged auto too, so the whole subtree keeps routing. A coordinator on a deliberately chosen account keeps today's verbatim pin. Fork keeps the source's account and flag (the transcript is on that account).
+`resolveOrchestratorAccount` returns `auto` (instead of `PinnedAccount(t.Account)`) when the coordinator task has `AccountAuto`. MCP `task_create` caller inheritance does the same. An explicit `auto` re-runs selection, and the new task is flagged auto too, so the whole subtree keeps routing. A coordinator on a deliberately chosen account keeps today's verbatim pin. Fork uses the same rule (`agent.InheritAccount`): a fork copies context into a new worktree rather than resuming the source transcript, so it is free to land elsewhere.
 
 ### D7. Account move (`agent.PrepareAccountMove`)
 

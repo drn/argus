@@ -165,7 +165,8 @@ func resolveOrchestratorBranchNamespace(database *db.DB, orchestratorID int64, p
 // orchestrator's coordinator task so spawned workers stay on the same account
 // (a personal-account coordinator must not fan out onto the work account).
 // A default-account coordinator yields "default", not "", so its workers are
-// pinned to it rather than falling through to a project/global default.
+// pinned to it rather than falling through to a project/global default; an
+// auto-routed coordinator yields "auto" so its workers are placed by usage.
 // An orchestrator with no coordinator binding at all yields "" (nothing to
 // inherit; normal resolution applies, logged). A coordinator that exists but
 // whose task cannot be read is an error, never a silent project-default
@@ -188,7 +189,7 @@ func resolveOrchestratorAccount(database *db.DB, orchestratorID int64) (string, 
 				uxlog.Log("[account] orchestrator %d coordinator task %s unreadable: %v", orchestratorID, b.ArgusTaskID, err)
 				continue
 			}
-			return PinnedAccount(t.Account), nil
+			return InheritAccount(t), nil
 		}
 		if len(bindings) > 0 {
 			return "", fmt.Errorf("resolve orchestrator account: no readable coordinator task for orchestrator %d", orchestratorID)

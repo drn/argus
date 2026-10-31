@@ -141,6 +141,9 @@ func IsTaskSandboxed(task *model.Task, cfg config.Config) bool {
 	return sb.Enabled && IsSandboxAvailable()
 }
 
+// resolveBackendTier is backendtier.ResolveBackend, indirected as a test seam.
+var resolveBackendTier = backendtier.ResolveBackend
+
 // resolveDefaultBackendName is the SINGLE shared backend-name precedence
 // chain (fix-backend-routing-semantics): explicit > project.Backend >
 // backendtier.ResolveBackend(cfg)'s tiered routing (when a tier list is
@@ -170,7 +173,12 @@ func resolveDefaultBackendName(explicit, project string, cfg config.Config, acco
 		if len(accounts) > 0 {
 			account = cfg.ResolveAccount(accounts[0], project)
 		}
-		name = backendtier.ResolveBackend(cfg, account)
+		if config.IsAutoAccount(account) {
+			// Feed the claude_usage tier the account auto would pick for a
+			// Claude backend, the one that would actually run the task.
+			account = pickAutoAccount(cfg, "claude")
+		}
+		name = resolveBackendTier(cfg, account)
 	}
 
 	if name == "" {

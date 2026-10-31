@@ -52,6 +52,8 @@ type Config struct {
 	DefaultAccount string `toml:"default_account"`
 	// ProjectAccounts maps a project name to its default account.
 	ProjectAccounts map[string]string `toml:"project_accounts"`
+	// AccountRouting tunes "auto" account selection. config.toml-only.
+	AccountRouting AccountRoutingConfig `toml:"account_routing"`
 	// BackendRouting is the ordered tier list consulted by default
 	// task-backend resolution (agent.ResolveBackend / CreateAndStart) whenever
 	// neither an explicit task backend nor a project backend applies. An

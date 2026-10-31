@@ -46,9 +46,13 @@ type Task struct {
 	// Sandboxed below — the override itself is never re-derived.
 	SandboxOverride string `json:"sandbox_override,omitempty"`
 	// Account names the account (config.Accounts key, or "default"/"") the
-	// task runs under. Resolved once at creation and immutable: resume reads
-	// transcripts / session state from that account's tool dir.
-	Account    string    `json:"account,omitempty"`
+	// task runs under. Resolved once at creation; changed only by an explicit
+	// account move. Resume reads transcripts / session state from that
+	// account's tool dir.
+	Account string `json:"account,omitempty"`
+	// AccountAuto is true when Account was picked by "auto" usage-based
+	// selection rather than chosen deliberately (add-account-auto-routing).
+	AccountAuto bool      `json:"account_auto,omitempty"`
 	Sandboxed  bool      `json:"sandboxed,omitempty"`
 	Archived   bool      `json:"archived,omitempty"`
 	Pinned     bool      `json:"pinned,omitempty"`

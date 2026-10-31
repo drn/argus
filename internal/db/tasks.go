@@ -20,7 +20,7 @@ var ErrTaskNotFound = errors.New("task not found")
 
 // taskColumns is the canonical column list for task queries. Order MUST
 // match scanTask's Scan call and the INSERT/UPDATE statements below.
-const taskColumns = `id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, result, archetype, profile, sandbox_override, account, created_at, started_at, ended_at`
+const taskColumns = `id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, result, archetype, profile, sandbox_override, account, account_auto, created_at, started_at, ended_at`
 
 // qualifyColumns prefixes each column in a comma-separated column list with
 // "alias." — needed when selecting taskColumns from a query that JOINs tasks
@@ -54,8 +54,8 @@ func scanTask(row scanner) (*model.Task, error) {
 func scanTaskExtra(row scanner, extra ...any) (*model.Task, error) {
 	t := &model.Task{}
 	var status, createdAt, startedAt, endedAt string
-	var sandboxed, archived, pinned int
-	dest := []any{&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Model, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &t.Result, &t.Archetype, &t.Profile, &t.SandboxOverride, &t.Account, &createdAt, &startedAt, &endedAt}
+	var sandboxed, archived, pinned, accountAuto int
+	dest := []any{&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Model, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &t.Result, &t.Archetype, &t.Profile, &t.SandboxOverride, &t.Account, &accountAuto, &createdAt, &startedAt, &endedAt}
 	dest = append(dest, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
@@ -64,6 +64,7 @@ func scanTaskExtra(row scanner, extra ...any) (*model.Task, error) {
 	t.Sandboxed = sandboxed != 0
 	t.Archived = archived != 0
 	t.Pinned = pinned != 0
+	t.AccountAuto = accountAuto != 0
 	t.CreatedAt = parseTime(createdAt)
 	t.StartedAt = parseTime(startedAt)
 	t.EndedAt = parseTime(endedAt)
@@ -126,9 +127,9 @@ func (d *DB) addLocked(t *model.Task) error {
 	if t.Pinned {
 		pinnedInt = 1
 	}
-	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, result, archetype, profile, sandbox_override, account, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, result, archetype, profile, sandbox_override, account, account_auto, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Model, t.Worktree, t.AgentPID, t.SessionID, sandboxedInt, archivedInt, pinnedInt,
-		t.BaseBranch, t.Result, t.Archetype, t.Profile, t.SandboxOverride, t.Account,
+		t.BaseBranch, t.Result, t.Archetype, t.Profile, t.SandboxOverride, t.Account, boolToInt(t.AccountAuto),
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt))
 	return err
 }
@@ -194,9 +195,9 @@ func (d *DB) updateLocked(t *model.Task) (model.Status, bool, bool, error) {
 	if t.Pinned {
 		pinnedInt = 1
 	}
-	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, model=?, worktree=?, agent_pid=?, session_id=?, sandboxed=?, archived=?, pinned=?, base_branch=?, result=?, archetype=?, profile=?, sandbox_override=?, account=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
+	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, model=?, worktree=?, agent_pid=?, session_id=?, sandboxed=?, archived=?, pinned=?, base_branch=?, result=?, archetype=?, profile=?, sandbox_override=?, account=?, account_auto=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
 		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Model, t.Worktree, t.AgentPID, t.SessionID, sandboxedInt, archivedInt, pinnedInt,
-		t.BaseBranch, t.Result, t.Archetype, t.Profile, t.SandboxOverride, t.Account,
+		t.BaseBranch, t.Result, t.Archetype, t.Profile, t.SandboxOverride, t.Account, boolToInt(t.AccountAuto),
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt), t.ID)
 	if err != nil {
 		return oldStatus, oldArchived, hadOld, err

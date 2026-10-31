@@ -96,6 +96,7 @@ func (s *Server) handleUpdateTaskRaw(w http.ResponseWriter, r *http.Request) {
 	}
 	task.Worktree = existing.Worktree
 	task.Account = existing.Account
+	task.AccountAuto = existing.AccountAuto
 	task.Branch = existing.Branch
 	task.BaseBranch = existing.BaseBranch
 	if err := s.db.Update(&task); err != nil {

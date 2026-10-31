@@ -135,30 +135,39 @@ var ErrAccount = errors.New("account")
 // resolveTaskAccount resolves and validates the account for a new task on the
 // named backend. An explicit selection that cannot run the backend is an
 // error; an unsupported project/global default or inherited account falls
-// back to the default account. Returns "" for the default account.
-func resolveTaskAccount(cfg config.Config, input CreateInput, backend string) (string, error) {
+// back to the default account. "auto" (explicit, inherited, project or global)
+// is resolved to the account with the most usage headroom and reported as
+// auto-routed. Returns "" for the default account.
+func resolveTaskAccount(cfg config.Config, input CreateInput, backend string) (string, bool, error) {
 	explicit := strings.TrimSpace(input.Account)
 	account := cfg.ResolveAccount(explicit, input.Project)
 	if err := cfg.ValidateAccount(account); err != nil {
-		return "", fmt.Errorf("%w: %w", ErrAccount, err)
+		return "", false, fmt.Errorf("%w: %w", ErrAccount, err)
 	}
 	command := cfg.Backends[backend].Command
+	if config.IsAutoAccount(account) {
+		picked := pickAutoAccount(cfg, command)
+		if picked == config.DefaultAccountName {
+			return "", true, nil
+		}
+		return picked, true, nil
+	}
 	if !cfg.AccountSupports(account, command) {
 		// Explicit and inherited picks fail loudly: silently running a personal
 		// coordinator's worker on the default (work) login is the bug this guards.
 		if explicit != "" {
 			if input.InheritedAccount {
-				return "", fmt.Errorf("%w: inherited account %q does not support backend %q (configure it for that tool or pin the backend)", ErrAccount, account, backend)
+				return "", false, fmt.Errorf("%w: inherited account %q does not support backend %q (configure it for that tool or pin the backend)", ErrAccount, account, backend)
 			}
-			return "", fmt.Errorf("%w: account %q does not support backend %q", ErrAccount, account, backend)
+			return "", false, fmt.Errorf("%w: account %q does not support backend %q", ErrAccount, account, backend)
 		}
 		uxlog.Log("[account] create: default-derived account %q does not support backend %q, using default", account, backend)
-		return "", nil
+		return "", false, nil
 	}
 	if account == config.DefaultAccountName {
-		return "", nil
+		return "", false, nil
 	}
-	return account, nil
+	return account, false, nil
 }
 
 // CreateAndStart is the single entry point for fully-transactional task
@@ -188,7 +197,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	// Resolve the backend and account before any side effect so a bad account
 	// never leaves a worktree behind. "default" is stored as "".
 	backend := resolveDefaultBackendName(input.Backend, input.Project, cfg, input.Account)
-	account, err := resolveTaskAccount(cfg, input, backend)
+	account, accountAuto, err := resolveTaskAccount(cfg, input, backend)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -277,6 +286,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		BaseBranch:      baseBranch,
 		SandboxOverride: strings.TrimSpace(input.SandboxOverride),
 		Account:         account,
+		AccountAuto:     accountAuto,
 	}
 	// Persist sandbox state at creation time so the display reflects the
 	// setting active when the task was launched, not the current setting.

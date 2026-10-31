@@ -15,6 +15,15 @@ import (
 // CODEX_HOME is exported.
 const DefaultAccountName = "default"
 
+// AutoAccountName is the reserved account value meaning "pick the account with
+// the most usage headroom at task creation" (internal/accountusage). It is
+// accepted wherever a new task's account is selected but never stored on a
+// task, and it cannot be defined as an [accounts.auto] table.
+const AutoAccountName = "auto"
+
+// IsAutoAccount reports whether name is the reserved auto-selection value.
+func IsAutoAccount(name string) bool { return name == AutoAccountName }
+
 // Account is one named identity (e.g. work / personal) that can carry a Claude
 // Code config dir and/or a Codex home, each an isolated login + state dir.
 type Account struct {
@@ -90,6 +99,12 @@ func (c Config) ValidateAccount(name string) error {
 	if isDefaultAccount(name) {
 		return nil
 	}
+	if IsAutoAccount(name) {
+		if _, defined := c.Accounts[name]; defined {
+			return fmt.Errorf("account %q is reserved for usage-based selection and cannot be defined", name)
+		}
+		return nil
+	}
 	acct, ok := c.Accounts[name]
 	if !ok {
 		return fmt.Errorf("unknown account %q", name)
@@ -147,6 +162,9 @@ func (c Config) ClaudeConfigDir(name string) (dir string, explicit bool, err err
 	if isDefaultAccount(name) {
 		return DefaultClaudeDir(), false, nil
 	}
+	if IsAutoAccount(name) {
+		return "", false, fmt.Errorf("account %q must be resolved to a concrete account first", name)
+	}
 	if err := c.ValidateAccount(name); err != nil {
 		return "", false, err
 	}
@@ -164,6 +182,9 @@ func (c Config) CodexHome(name string) (dir string, explicit bool, err error) {
 	if isDefaultAccount(name) {
 		return DefaultCodexHome(), false, nil
 	}
+	if IsAutoAccount(name) {
+		return "", false, fmt.Errorf("account %q must be resolved to a concrete account first", name)
+	}
 	if err := c.ValidateAccount(name); err != nil {
 		return "", false, err
 	}
@@ -178,9 +199,10 @@ func (c Config) CodexHome(name string) (dir string, explicit bool, err error) {
 // with the given command. The default account supports every backend; a named
 // account supports Claude backends only with claude_config_dir and Codex
 // backends only with codex_home, and no other backend (pi, opencode,
-// antigravity, custom).
+// antigravity, custom). "auto" supports every backend: its candidates always
+// include "default".
 func (c Config) AccountSupports(name, backendCommand string) bool {
-	if isDefaultAccount(name) {
+	if isDefaultAccount(name) || (IsAutoAccount(name) && c.ValidateAccount(name) == nil) {
 		return true
 	}
 	if c.ValidateAccount(name) != nil {
@@ -218,7 +240,7 @@ func (c Config) ResolveAccount(explicit, project string) string {
 func (c Config) AccountNames() []string {
 	names := make([]string, 0, len(c.Accounts))
 	for n := range c.Accounts {
-		if !isDefaultAccount(n) && c.ValidateAccount(n) == nil {
+		if !isDefaultAccount(n) && !IsAutoAccount(n) && c.ValidateAccount(n) == nil {
 			names = append(names, n)
 		}
 	}

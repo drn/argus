@@ -97,6 +97,16 @@ func TestHandleUpdateTaskRaw(t *testing.T) {
 		testutil.Equal(t, got.Account, "personal")
 	})
 
+	t.Run("auto-routed flag survives a raw put that omits it", func(t *testing.T) {
+		testutil.NoError(t, d.Add(&model.Task{ID: "t3", Name: "gamma", Status: model.StatusInProgress, Project: "p", Account: "personal", AccountAuto: true}))
+		body := `{"id":"t3","name":"gamma","status":"in_progress","project":"p","branch":"","prompt":"","created_at":"2026-05-22T00:00:00Z"}`
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, masterReq("PUT", "/api/tasks/t3/raw", body))
+		testutil.Equal(t, w.Code, http.StatusOK)
+		got, _ := d.Get("t3")
+		testutil.Equal(t, got.AccountAuto, true)
+	})
+
 	t.Run("device token also applies the update", func(t *testing.T) {
 		body := `{"id":"t1","name":"viadevice","status":"in_review","project":"p","branch":"","prompt":"","created_at":"2026-05-22T00:00:00Z"}`
 		w := httptest.NewRecorder()

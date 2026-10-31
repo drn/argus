@@ -935,7 +935,7 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 	// Forks inherit the source task's backend, model, sandbox override, and account so
 	// the new task starts with the same agent and confinement rather than
 	// silently defaulting back to the global setting.
-	task, err := s.createTask(name, prompt, project, src.Backend, src.Model, src.SandboxOverride, agent.PinnedAccount(src.Account), false)
+	task, err := s.createTask(name, prompt, project, src.Backend, src.Model, src.SandboxOverride, agent.InheritAccount(src), false)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
