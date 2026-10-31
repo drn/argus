@@ -416,6 +416,9 @@ var SupervisorSpawnPaths = []string{
 	"internal/claudeenv/claudeenv.go",            // parent-session marker denylist + persistence flag BuildCmd applies
 	"internal/agent/codexaccount.go",             // per-task Codex home, env hygiene, sandbox grant
 	"internal/config/accounts.go",                // account → config dir resolution BuildCmd reads
+	"internal/config/accountrouting.go",          // auto-account thresholds backend resolution reads
+	"internal/agent/autoaccount.go",              // auto-account peek backend resolution calls
+	"internal/accountusage/accountusage.go",      // auto-account headroom pick
 	"internal/agent/nonclaude_context.go",        // OpenCode child-only skills config content
 	"internal/agent/prelaunch.go",                // backend prelaunch (pi/ollama) run before the fork
 	"internal/agent/routing_prompt.go",           // --append-system-prompt-file routing injection
@@ -472,7 +475,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "3f8a363ff98ea78872ee29314508121c26cdd8b79a0d41a8721598909994e3bd"
+	SpawnSurfaceDigest  = "48da092c0b7a9e69a25052857a0a3bbcd7c86e0aa5a76372fff2ab6f320fbcca"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

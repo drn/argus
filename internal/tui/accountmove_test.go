@@ -33,9 +33,10 @@ type moveTestSession struct {
 	idle bool
 }
 
-func (*moveTestSession) Alive() bool    { return true }
-func (s *moveTestSession) IsIdle() bool { return s.idle }
-func (*moveTestSession) PID() int       { return 77 }
+func (*moveTestSession) Alive() bool         { return true }
+func (s *moveTestSession) IsIdle() bool      { return s.idle }
+func (*moveTestSession) PID() int            { return 77 }
+func (*moveTestSession) PTYSize() (int, int) { return 120, 40 }
 
 // moveKickRunner reports one live session and records in-place restarts.
 type moveKickRunner struct {

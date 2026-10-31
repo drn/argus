@@ -19,9 +19,10 @@ type moveTestSession struct {
 	idle bool
 }
 
-func (*moveTestSession) Alive() bool    { return true }
-func (s *moveTestSession) IsIdle() bool { return s.idle }
-func (*moveTestSession) PID() int       { return 4242 }
+func (*moveTestSession) Alive() bool         { return true }
+func (s *moveTestSession) IsIdle() bool      { return s.idle }
+func (*moveTestSession) PID() int            { return 4242 }
+func (*moveTestSession) PTYSize() (int, int) { return 120, 40 }
 
 type moveTestRunner struct {
 	agent.SessionRunner
