@@ -23,12 +23,18 @@ func (s *moveSession) IsIdle() bool { return s.idle }
 func (s *moveSession) Alive() bool  { return s.alive }
 
 // moveRunner records kick/revive restarts; sess nil means no live session.
+// dieOnKick marks the session dead when a kick fails (the exit race).
 type moveRunner struct {
-	sess    *moveSession
-	kicked  *model.Task
-	revived *model.Task
-	kickErr error
+	sess       *moveSession
+	kicked     *model.Task
+	revived    *model.Task
+	kickErr    error
+	dieOnKick  bool
+	pending    bool
+	rows, cols uint16
 }
+
+func (r *moveRunner) HasPendingRestart(string) bool { return r.pending }
 
 func (r *moveRunner) Get(string) SessionHandle {
 	if r.sess == nil {
@@ -37,8 +43,12 @@ func (r *moveRunner) Get(string) SessionHandle {
 	return r.sess
 }
 
-func (r *moveRunner) KickRerender(task *model.Task, _ config.Config, _, _ uint16) error {
+func (r *moveRunner) KickRerender(task *model.Task, _ config.Config, rows, cols uint16) error {
+	r.rows, r.cols = rows, cols
 	if r.kickErr != nil {
+		if r.dieOnKick {
+			r.sess.alive = false
+		}
 		return r.kickErr
 	}
 	cp := *task
@@ -168,23 +178,72 @@ func TestMoveTaskAccount_NoLiveSessionLeavesStartToCaller(t *testing.T) {
 
 func TestMoveTaskAccount_KickRaceFallsBackToCaller(t *testing.T) {
 	f := newMoveFixture(t, true)
-	r := &moveRunner{sess: &moveSession{idle: true, alive: true}, kickErr: ErrSessionNotFound}
+	// The daemon client flattens ErrSessionNotFound to a plain string.
+	r := &moveRunner{sess: &moveSession{idle: true, alive: true}, kickErr: errors.New("session not found"), dieOnKick: true}
 
-	_, res, err := MoveTaskAccount(f.d, r, AccountMoveInput{TaskID: "mv", Account: "work"})
+	task, res, err := MoveTaskAccount(f.d, r, AccountMoveInput{TaskID: "mv", Account: "work"})
 	testutil.NoError(t, err)
 	testutil.False(t, res.Started)
+	testutil.Equal(t, task.Account, "work")
+	got, _ := f.d.Get("mv")
+	testutil.Equal(t, got.Account, "work")
 }
 
-func TestMoveTaskAccount_KickFailureReported(t *testing.T) {
+func TestMoveTaskAccount_KickFailureRollsBack(t *testing.T) {
 	f := newMoveFixture(t, true)
-	r := &moveRunner{sess: &moveSession{idle: true, alive: true}, kickErr: errors.New("boom")}
+	f.task.AccountAuto = true
+	testutil.NoError(t, f.d.Update(f.task))
+	r := &moveRunner{sess: &moveSession{idle: true, alive: true}, kickErr: errors.New("kick already pending")}
 
 	_, _, err := MoveTaskAccount(f.d, r, AccountMoveInput{TaskID: "mv", Account: "work"})
 	testutil.Error(t, err)
-	testutil.Contains(t, err.Error(), "boom")
-	// The account change already persisted; the task stays on the target.
+	testutil.Contains(t, err.Error(), "kick already pending")
+	testutil.Contains(t, err.Error(), `left on "default"`)
+	// The old session is still running on default, so the row says default.
 	got, _ := f.d.Get("mv")
-	testutil.Equal(t, got.Account, "work")
+	testutil.Equal(t, got.Account, "")
+	testutil.True(t, got.AccountAuto)
+}
+
+func TestMoveTaskAccount_PendingRestartRefused(t *testing.T) {
+	f := newMoveFixture(t, true)
+	r := &moveRunner{sess: &moveSession{idle: true, alive: true}, pending: true}
+	_, _, err := MoveTaskAccount(f.d, r, AccountMoveInput{TaskID: "mv", Account: "work", Force: true})
+	testutil.ErrorIs(t, err, ErrAccountMoveBusy)
+	got, _ := f.d.Get("mv")
+	testutil.Equal(t, got.Account, "")
+	testutil.Nil(t, r.kicked)
+}
+
+func TestMoveTaskAccount_ConcurrentMoveRefused(t *testing.T) {
+	f := newMoveFixture(t, true)
+	testutil.True(t, claimAccountMove("mv"))
+	_, _, err := MoveTaskAccount(f.d, &moveRunner{}, AccountMoveInput{TaskID: "mv", Account: "work"})
+	testutil.ErrorIs(t, err, ErrAccountMoveBusy)
+	releaseAccountMove("mv")
+	_, _, err = MoveTaskAccount(f.d, &moveRunner{}, AccountMoveInput{TaskID: "mv", Account: "work"})
+	testutil.NoError(t, err)
+}
+
+func TestMoveTaskAccount_RestartUsesSessionSize(t *testing.T) {
+	f := newMoveFixture(t, true)
+	r := &moveRunner{sess: &moveSession{idle: true, alive: true}}
+	_, _, err := MoveTaskAccount(f.d, r, AccountMoveInput{TaskID: "mv", Account: "work"})
+	testutil.NoError(t, err)
+	testutil.Equal(t, r.cols, uint16(80))
+	testutil.Equal(t, r.rows, uint16(24))
+	_, _, err = MoveTaskAccount(f.d, r, AccountMoveInput{TaskID: "mv", Account: "default", Rows: 50, Cols: 200})
+	testutil.NoError(t, err)
+	testutil.Equal(t, r.cols, uint16(200))
+}
+
+func TestMoveTaskAccount_SameConfigDirRejected(t *testing.T) {
+	f := newMoveFixture(t, true)
+	t.Setenv("ARGUS_TEST_PINNED_CCD", filepath.Join(f.home, "pinned"))
+	testutil.NoError(t, f.d.SetBackend("test", config.Backend{Command: "claude", EnvVars: map[string]string{"CLAUDE_CONFIG_DIR": "env:ARGUS_TEST_PINNED_CCD"}}))
+	_, _, err := MoveTaskAccount(f.d, &moveRunner{}, AccountMoveInput{TaskID: "mv", Account: "work"})
+	testutil.ErrorIs(t, err, ErrAccount)
+	testutil.Contains(t, err.Error(), "same Claude config dir")
 }
 
 func TestMoveTaskAccount_AutoPicksAnotherAccount(t *testing.T) {

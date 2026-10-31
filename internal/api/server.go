@@ -151,9 +151,13 @@ type Server struct {
 	bridgeHub *bridge.Hub
 	// accountUsage is the per-account Claude usage ledger fed by bridge
 	// measures; "auto" account selection and GET /api/accounts read it.
-	accountUsage   *accountusage.Ledger
-	bridgeIngestMu sync.Mutex
-	bridgeShadow   *bridge.Shadow
+	accountUsage *accountusage.Ledger
+	// measureAccounts maps a session launch generation to the account it
+	// first measured under, so an account move never books the old process's
+	// last readings to the new account. One short entry per launch.
+	measureAccounts sync.Map
+	bridgeIngestMu  sync.Mutex
+	bridgeShadow    *bridge.Shadow
 	// Raw scraper input is kept apart from runner verdicts to avoid feeding a
 	// bridge-owned exact dialog back into a later uncertain permission.
 	bridgeScraperMu    sync.RWMutex

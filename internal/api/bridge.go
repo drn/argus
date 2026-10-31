@@ -259,6 +259,10 @@ func (s *Server) recordAccountUsage(account string, st bridge.State) {
 	if s.accountUsage == nil {
 		return
 	}
+	if st.Generation != "" {
+		first, _ := s.measureAccounts.LoadOrStore(st.Generation, account)
+		account = first.(string)
+	}
 	for _, limit := range st.RateLimits {
 		reset, err := time.Parse(time.RFC3339, limit.ResetsAt)
 		if err != nil {

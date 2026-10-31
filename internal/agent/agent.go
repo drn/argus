@@ -176,7 +176,7 @@ func resolveDefaultBackendName(explicit, project string, cfg config.Config, acco
 		if config.IsAutoAccount(account) {
 			// Feed the claude_usage tier the account auto would pick for a
 			// Claude backend, the one that would actually run the task.
-			account = pickAutoAccount(cfg, "claude")
+			account = peekAutoAccount(cfg, "claude")
 		}
 		name = resolveBackendTier(cfg, account)
 	}

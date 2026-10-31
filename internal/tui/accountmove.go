@@ -30,25 +30,27 @@ type remoteAccountMover interface {
 type kickRunner interface {
 	Get(taskID string) agent.SessionHandle
 	KickRerender(task *model.Task, cfg config.Config, rows, cols uint16) error
+	HasPendingRestart(taskID string) bool
 }
 
-// openAccountPicker starts the `>` flow for taskID: it builds the target list
-// off the UI thread (the usage read is a daemon RPC or a REST call), then
-// shows the picker, or a notice when the task cannot move.
+// openAccountPicker starts the `>` flow for taskID. Everything that can block
+// (the task read, which is HTTP in remote mode; the session-status and usage
+// reads, which are daemon RPCs) runs off the UI thread; the picker, or a
+// notice when the task cannot move, is shown back on it.
 func (a *App) openAccountPicker(taskID string) {
 	if a.accountPicker != nil || taskID == "" {
 		return
 	}
-	t, err := a.db.Get(taskID)
-	if err != nil || t == nil {
-		a.flashNotice("Move account: task not found")
-		return
-	}
-	busy := false
-	if h := a.runner.Get(taskID); h != nil && h.Alive() && !h.IsIdle() {
-		busy = true
-	}
 	go func() {
+		t, err := a.db.Get(taskID)
+		if err != nil || t == nil {
+			a.tapp.QueueUpdateDraw(func() { a.flashNotice("Move account: task not found") })
+			return
+		}
+		busy := false
+		if h := a.runner.Get(taskID); h != nil && h.Alive() && !h.IsIdle() {
+			busy = true
+		}
 		choices, notice := a.accountMoveChoices(t)
 		a.tapp.QueueUpdateDraw(func() {
 			if notice != "" {

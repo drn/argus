@@ -59,6 +59,16 @@ func PickAccount(cfg config.Config, backendCommand string, exclude ...string) (a
 	return accountusage.Pick(AccountThresholds(cfg), cfg.AccountNamesFor(backendCommand), AccountUsage(), exclude...)
 }
 
+// peekAutoAccount is pickAutoAccount without the log line, for lookups that
+// only need the likely account (backend-tier resolution runs on every
+// ResolveBackend of a task with no stored backend).
+func peekAutoAccount(cfg config.Config, backendCommand string) string {
+	if choice, ok := PickAccount(cfg, backendCommand); ok {
+		return choice.Account
+	}
+	return config.DefaultAccountName
+}
+
 // pickAutoAccount resolves "auto" to a concrete account name for a new task
 // on the backend command, logging the choice and every score.
 func pickAutoAccount(cfg config.Config, backendCommand string) string {

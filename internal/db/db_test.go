@@ -2836,3 +2836,25 @@ func TestCreateTables_AddsAccountAutoToExistingDB(t *testing.T) {
 	testutil.Equal(t, all[0].Account, "personal")
 	testutil.Equal(t, all[0].AccountAuto, false)
 }
+
+func TestDB_SetTaskAccount_OnlyTouchesAccountColumns(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "acct", Account: "", AccountAuto: true, Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+
+	// A concurrent edit lands between a mover's read and its write.
+	other, _ := d.Get(task.ID)
+	other.Name = "renamed"
+	other.SetStatus(model.StatusInReview)
+	testutil.NoError(t, d.Update(other))
+
+	testutil.NoError(t, d.SetTaskAccount(task.ID, "personal", false))
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Account, "personal")
+	testutil.False(t, got.AccountAuto)
+	testutil.Equal(t, got.Name, "renamed")
+	testutil.Equal(t, got.Status, model.StatusInReview)
+
+	testutil.ErrorIs(t, d.SetTaskAccount("missing", "x", false), ErrTaskNotFound)
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/drn/argus/internal/accountusage"
 	"github.com/drn/argus/internal/backendkind"
@@ -22,6 +23,34 @@ import (
 // ErrAccountMoveBusy rejects moving a task whose agent is actively working,
 // unless the caller asked to force it.
 var ErrAccountMoveBusy = errors.New("agent is working; pass force to interrupt it")
+
+// errAccountMovePending rejects a move while another move or restart of the
+// same task is still in flight; force does not override it. It wraps
+// ErrAccountMoveBusy so callers map both to "try again later".
+var errAccountMovePending = fmt.Errorf("%w (a move or restart of this task is already in progress)", ErrAccountMoveBusy)
+
+// accountMovesInFlight serializes moves per task within this process; the
+// runner's HasPendingRestart covers a restart queued by another process.
+var accountMovesInFlight = struct {
+	sync.Mutex
+	ids map[string]bool
+}{ids: map[string]bool{}}
+
+func claimAccountMove(id string) bool {
+	accountMovesInFlight.Lock()
+	defer accountMovesInFlight.Unlock()
+	if accountMovesInFlight.ids[id] {
+		return false
+	}
+	accountMovesInFlight.ids[id] = true
+	return true
+}
+
+func releaseAccountMove(id string) {
+	accountMovesInFlight.Lock()
+	delete(accountMovesInFlight.ids, id)
+	accountMovesInFlight.Unlock()
+}
 
 // AccountMoveInput selects the task and the target account: a configured
 // account, "default", or "auto". Force interrupts a busy session.
@@ -51,6 +80,7 @@ type AccountMoveResult struct {
 type accountMoveRunner interface {
 	Get(taskID string) SessionHandle
 	KickRerender(task *model.Task, cfg config.Config, rows, cols uint16) error
+	HasPendingRestart(taskID string) bool
 }
 
 // MoveTaskAccount moves a Claude task to another account without any model
@@ -59,6 +89,10 @@ type accountMoveRunner interface {
 // and restarts a live session in place under the target with --resume. The
 // task row, worktree, branch and hera bindings are untouched.
 func MoveTaskAccount(database *db.DB, runner accountMoveRunner, in AccountMoveInput) (*model.Task, AccountMoveResult, error) {
+	if !claimAccountMove(in.TaskID) {
+		return nil, AccountMoveResult{}, errAccountMovePending
+	}
+	defer releaseAccountMove(in.TaskID)
 	task, err := database.Get(in.TaskID)
 	if err != nil {
 		return nil, AccountMoveResult{}, err
@@ -77,12 +111,10 @@ func MoveTaskAccount(database *db.DB, runner accountMoveRunner, in AccountMoveIn
 		return nil, AccountMoveResult{}, err
 	}
 
-	var sess SessionHandle
-	if runner != nil {
-		if h := runner.Get(task.ID); h != nil && h.Alive() {
-			sess = h
-		}
+	if runner != nil && runner.HasPendingRestart(task.ID) {
+		return nil, AccountMoveResult{}, errAccountMovePending
 	}
+	sess := liveSession(runner, task.ID)
 	if sess != nil && !sess.IsIdle() && !in.Force {
 		return nil, AccountMoveResult{}, ErrAccountMoveBusy
 	}
@@ -102,15 +134,21 @@ func MoveTaskAccount(database *db.DB, runner accountMoveRunner, in AccountMoveIn
 	if err != nil {
 		return nil, AccountMoveResult{}, fmt.Errorf("%w: target account %q: %w", ErrAccount, to, err)
 	}
+	if filepath.Clean(srcDir) == filepath.Clean(dstDir) {
+		// e.g. the backend pins CLAUDE_CONFIG_DIR through env_vars: switching
+		// the stored account would not change the login at all.
+		return nil, AccountMoveResult{}, fmt.Errorf("%w: accounts %q and %q resolve to the same Claude config dir for this backend", ErrAccount, from, to)
+	}
 	resumed, err := copyClaudeTranscript(srcDir, dstDir, task.Worktree, task.SessionID)
 	if err != nil {
 		return nil, AccountMoveResult{}, fmt.Errorf("copy transcript to account %q: %w", to, err)
 	}
 
-	task.Account, task.AccountAuto = moved.Account, false
-	if err := database.Update(task); err != nil {
+	prevAccount, prevAuto := task.Account, task.AccountAuto
+	if err := database.SetTaskAccount(task.ID, moved.Account, false); err != nil {
 		return nil, AccountMoveResult{}, fmt.Errorf("persist account move: %w", err)
 	}
+	task.Account, task.AccountAuto = moved.Account, false
 	res := AccountMoveResult{From: from, To: to, Resumed: resumed}
 	logAccountMove(task.ID, res, "persisted")
 
@@ -119,7 +157,11 @@ func MoveTaskAccount(database *db.DB, runner accountMoveRunner, in AccountMoveIn
 	}
 	rows, cols := in.Rows, in.Cols
 	if rows == 0 || cols == 0 {
-		rows, cols = 24, 80
+		c, r := sess.PTYSize()
+		rows, cols = uint16(max(r, 0)), uint16(max(c, 0)) //nolint:gosec // PTY sizes are small positive ints
+		if rows == 0 || cols == 0 {
+			rows, cols = 24, 80
+		}
 	}
 	restart := *task
 	if resumed {
@@ -131,19 +173,37 @@ func MoveTaskAccount(database *db.DB, runner accountMoveRunner, in AccountMoveIn
 	} else {
 		err = runner.KickRerender(&restart, cfg, rows, cols)
 	}
-	if errors.Is(err, ErrSessionNotFound) {
-		// The session exited between the liveness check and the kick.
-		logAccountMove(task.ID, res, "session gone before restart; caller starts it")
-		return task, res, nil
-	}
 	if err != nil {
-		uxlog.Log("[account] move task=%s %s→%s restart failed: %v", task.ID, from, to, err)
-		slog.Warn("[account] move restart failed", "task", task.ID, "from", from, "to", to, "err", err)
-		return task, res, fmt.Errorf("account moved to %q but restart failed: %w", to, err)
+		if liveSession(runner, task.ID) == nil {
+			// The session exited between the liveness check and the kick (the
+			// daemon client flattens ErrSessionNotFound to a string, so check
+			// liveness rather than the error value).
+			logAccountMove(task.ID, res, fmt.Sprintf("session gone before restart (%v); caller starts it", err))
+			return task, res, nil
+		}
+		// The old session is still running on the source account: put the
+		// stored account back so the row never disagrees with the live agent.
+		if rbErr := database.SetTaskAccount(task.ID, prevAccount, prevAuto); rbErr != nil {
+			slog.Error("[account] move rollback failed", "task", task.ID, "err", rbErr)
+		}
+		uxlog.Log("[account] move task=%s %s→%s restart failed, account rolled back: %v", task.ID, from, to, err)
+		slog.Warn("[account] move restart failed; rolled back", "task", task.ID, "from", from, "to", to, "err", err)
+		return nil, AccountMoveResult{}, fmt.Errorf("restart on account %q failed, task left on %q: %w", to, from, err)
 	}
 	res.Started = true
 	logAccountMove(task.ID, res, "restarted in place")
 	return task, res, nil
+}
+
+// liveSession returns the task's session when it is alive, else nil.
+func liveSession(runner accountMoveRunner, taskID string) SessionHandle {
+	if runner == nil {
+		return nil
+	}
+	if h := runner.Get(taskID); h != nil && h.Alive() {
+		return h
+	}
+	return nil
 }
 
 // resolveMoveTarget validates the requested target and resolves "auto".

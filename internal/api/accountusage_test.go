@@ -52,3 +52,20 @@ func TestAccountUsage_NilServerSafe(t *testing.T) {
 	var s *Server
 	testutil.Equal(t, len(s.AccountUsage()), 0)
 }
+
+func TestBridgeMeasure_UsageStaysWithTheLaunchAccount(t *testing.T) {
+	s, _, task := bridgeAuthorityServer(t)
+	reset := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	postMeasure(t, s, task.ID, 1, `[{"kind":"five_hour","percent_used":99,"resets_at":"`+reset+`"}]`)
+
+	// The task is moved to "personal" while the old process (same launch
+	// generation) is still reporting: its reading must stay on default.
+	task.Account = "personal"
+	testutil.NoError(t, s.db.Update(task))
+	postMeasure(t, s, task.ID, 2, `[{"kind":"five_hour","percent_used":100,"resets_at":"`+reset+`"}]`)
+
+	snap := s.AccountUsage()
+	testutil.Equal(t, snap["default"].FiveHour.Pct, 100.0)
+	_, booked := snap["personal"]
+	testutil.False(t, booked)
+}

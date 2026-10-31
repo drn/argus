@@ -748,3 +748,18 @@ func (d *DB) WorktreePaths() (map[string]bool, error) {
 	}
 	return paths, nil
 }
+
+// SetTaskAccount writes only a task's account and auto-routed flag, so an
+// account move never reverts a concurrent edit to any other column.
+func (d *DB) SetTaskAccount(id, account string, auto bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	res, err := d.conn.Exec(`UPDATE tasks SET account=?, account_auto=? WHERE id=?`, account, boolToInt(auto), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
+	}
+	return nil
+}
