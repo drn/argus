@@ -21,11 +21,30 @@ func (t *Table) PriceDelta(model string, d TokenDeltas) (usd float64, ok bool) {
 	if !found {
 		return 0, false
 	}
+	return rate.price(d), true
+}
+
+// PriceCall prices ONE provider API call (add-codex-cost-accrual Decision 3):
+// like PriceDelta, but a call whose total input tokens (cached included)
+// exceed the model's LongContextThreshold is priced at its LongContext rates.
+// ok is false when model has no entry in t, with the same "not priced, never
+// zero" contract as PriceDelta.
+func (t *Table) PriceCall(model string, d TokenDeltas, callInputTokens int64) (usd float64, ok bool) {
+	rate, found := t.Models[model]
+	if !found {
+		return 0, false
+	}
+	if rate.LongContext != nil && rate.LongContextThreshold > 0 && callInputTokens > rate.LongContextThreshold {
+		return rate.LongContext.price(d), true
+	}
+	return rate.price(d), true
+}
+
+func (r Rate) price(d TokenDeltas) float64 {
 	const perToken = 1.0 / 1_000_000
-	usd = float64(d.Input)*rate.Input*perToken +
-		float64(d.CacheWrite1h)*rate.CacheWrite1h*perToken +
-		float64(d.CacheWrite5m)*rate.CacheWrite5m*perToken +
-		float64(d.CacheRead)*rate.CacheRead*perToken +
-		float64(d.Output)*rate.Output*perToken
-	return usd, true
+	return float64(d.Input)*r.Input*perToken +
+		float64(d.CacheWrite1h)*r.CacheWrite1h*perToken +
+		float64(d.CacheWrite5m)*r.CacheWrite5m*perToken +
+		float64(d.CacheRead)*r.CacheRead*perToken +
+		float64(d.Output)*r.Output*perToken
 }

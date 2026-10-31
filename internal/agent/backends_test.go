@@ -611,3 +611,37 @@ func TestBuildCmd_Cursor(t *testing.T) {
 		})
 	}
 }
+
+func TestFamilyCostSource(t *testing.T) {
+	for _, tt := range []struct {
+		kind backendkind.Kind
+		want CostSource
+	}{
+		{backendkind.Claude, CostSourceClaudeHook},
+		{backendkind.Codex, CostSourceCodexRollout},
+		{backendkind.Pi, CostSourceNone},
+		{backendkind.Opencode, CostSourceNone},
+		{backendkind.Antigravity, CostSourceNone},
+		{backendkind.Cursor, CostSourceNone},
+		{backendkind.Kind("no-such-cli"), CostSourceClaudeHook},
+	} {
+		t.Run(string(tt.kind), func(t *testing.T) {
+			testutil.Equal(t, FamilyForKind(tt.kind).CostSource, tt.want)
+		})
+	}
+}
+
+func TestCodexStateDBPath(t *testing.T) {
+	t.Run("explicit home wins", func(t *testing.T) {
+		t.Setenv("CODEX_SQLITE_HOME", "/env/home")
+		got, err := CodexStateDBPath("/acct/home")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, filepath.Join("/acct/home", codexStateDB))
+	})
+	t.Run("env fallback", func(t *testing.T) {
+		t.Setenv("CODEX_SQLITE_HOME", "/env/home")
+		got, err := CodexStateDBPath("")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, filepath.Join("/env/home", codexStateDB))
+	})
+}

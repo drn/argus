@@ -17,11 +17,14 @@
 # A model with no [models.<alias>] entry here (and none in an in-repo or
 # installed override copy) accrues no cost — never a guess, never zero.
 #
-# Codex aliases (e.g. "gpt-6-sol", "gpt-6-astra") are deliberately NOT seeded: the
-# accrual mechanism runs entirely off `argus coord-hook`, which is registered
-# purely as a Claude Code Stop hook (internal/doctor/stophook.go) and never
-# fires for a Codex-backend session at all — a rate entry for those aliases
-# would sit unreachable and imply a capability that doesn't exist yet.
+# Codex models are keyed by the model id Codex itself records in each rollout
+# turn (e.g. "gpt-6.1-sol"), not by an Argus alias — the daemon's Codex
+# rollout sweeper (internal/codexcost) prices every call individually, so the
+# optional long-context tier below applies per call:
+#   long_context_threshold    - a call whose total input tokens (cached
+#                               included) EXCEED this is priced entirely at...
+#   [models.<id>.long_context] - ...these five rates instead of the base ones.
+# Codex has a single cache-write class; it is priced at cache_write_5m.
 #
 # Installed to ~/.argus/rates.toml on first daemon start if absent (never
 # overwrites an existing file); an in-repo rates.toml takes precedence over
@@ -61,4 +64,24 @@ input          = 3.00
 cache_write_1h = 6.00
 cache_write_5m = 3.75
 cache_read     = 0.30
+output         = 15.00
+
+[models."gpt-6.1-sol"]
+# OpenAI published standard pricing (openai.com/index/introducing-gpt-6-1-sol,
+# Oct 2026): $2 input / $0.10 cached input / $10 output. The cache-write rate
+# and the whole long-context tier (calls over 272K input tokens) are taken
+# from aggregator listings citing OpenAI's model page — verify before relying
+# on them.
+input                  = 2.00
+cache_write_1h         = 2.50
+cache_write_5m         = 2.50
+cache_read             = 0.10
+output                 = 10.00
+long_context_threshold = 272000
+
+[models."gpt-6.1-sol".long_context]
+input          = 4.00
+cache_write_1h = 5.00
+cache_write_5m = 5.00
+cache_read     = 0.20
 output         = 15.00

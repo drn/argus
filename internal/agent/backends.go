@@ -118,6 +118,11 @@ type Family struct {
 	// enabled). Mods run only inside Claude Code; every other family keeps
 	// screen-reading as its only state source.
 	BridgeMod bool
+	// CostSource is where hera cost accrual for this family's sessions comes
+	// from (add-codex-cost-accrual). The daemon's Codex rollout sweeper reads
+	// only CostSourceCodexRollout families, so it never touches a binding the
+	// Stop-hook/bridge accounting owns.
+	CostSource CostSource
 
 	// KnownModels is the curated model list for pickers; nil means
 	// custom-only (any typed id is accepted).
@@ -170,6 +175,21 @@ type Family struct {
 	// the sandbox can't write (agy's ~/.gemini/...) and may not exist yet.
 	PrecreateSandboxGrants bool
 }
+
+// CostSource names a family's hera cost-accrual mechanism.
+type CostSource int
+
+const (
+	// CostSourceNone: nothing measures this family's spend; its roles show
+	// "n/a" cost.
+	CostSourceNone CostSource = iota
+	// CostSourceClaudeHook: `argus coord-hook` (Claude Code Stop hook) and the
+	// bridge mod accrue cost.
+	CostSourceClaudeHook
+	// CostSourceCodexRollout: the daemon prices each call recorded in the
+	// task's Codex rollout files (internal/codexcost).
+	CostSourceCodexRollout
+)
 
 func mustSpec(k backendkind.Kind) backendkind.Spec {
 	s, ok := backendkind.Lookup(k)
@@ -373,6 +393,7 @@ var families = []*Family{
 		RecaptureEveryExit: true,
 		SessionSwitcher:    true,
 		BridgeMod:          true,
+		CostSource:         CostSourceClaudeHook,
 		KnownModels:        []string{"opus", "sonnet", "haiku", "fable"},
 		ModelDelivery:      ModelFlag,
 		SkillDelivery:      SkillsAddDir,
@@ -388,9 +409,10 @@ var families = []*Family{
 		},
 	},
 	{
-		Spec:      mustSpec(backendkind.Codex),
-		Capture:   captureCodex,
-		ResumeCmd: codexResumeCommand,
+		Spec:       mustSpec(backendkind.Codex),
+		Capture:    captureCodex,
+		ResumeCmd:  codexResumeCommand,
+		CostSource: CostSourceCodexRollout,
 		// Keep this list synced with the Codex CLI's own `/model` picker and
 		// the seed diligence profiles' archetype.*.models.codex entries.
 		KnownModels:   []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"},
@@ -486,6 +508,7 @@ var customFamily = &Family{
 	PinsSessionID:   true,
 	ResumeFlag:      "--resume",
 	SessionSwitcher: true,
+	CostSource:      CostSourceClaudeHook,
 }
 
 // FamilyOf returns the family for a backend command; never nil.

@@ -3,18 +3,28 @@ package pricing
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )
 
 // Rate is the five per-rate-class USD-per-million-tokens price for one
 // model, decoded from one [models.<alias>] table in rates.toml.
+//
+// LongContextThreshold and LongContext optionally declare a provider's
+// long-prompt tier (add-codex-cost-accrual): a single call whose total input
+// tokens exceed the threshold is priced entirely at LongContext's rates. Only
+// per-call pricers (PriceCall) honor the tier; PriceDelta prices aggregate
+// deltas and always uses the base rates.
 type Rate struct {
 	Input        float64 `toml:"input"`
 	CacheWrite1h float64 `toml:"cache_write_1h"`
 	CacheWrite5m float64 `toml:"cache_write_5m"`
 	CacheRead    float64 `toml:"cache_read"`
 	Output       float64 `toml:"output"`
+
+	LongContextThreshold int64 `toml:"long_context_threshold"`
+	LongContext          *Rate `toml:"long_context"`
 }
 
 // Table is the decoded rates.toml shape: one Rate per model alias.
@@ -65,4 +75,20 @@ func (l *Loader) locate() (string, bool) {
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir()
+}
+
+// LoadInstalled installs the embedded default to libraryPath when absent
+// (never overwriting), then loads the table with worktree's in-repo
+// <worktree>/.argus/rates.toml taking precedence — the one resolution every
+// accrual path (Stop-hook PUT handler, Codex rollout sweeper) prices against.
+// An empty worktree skips the in-repo override.
+func LoadInstalled(libraryPath, worktree string) (*Table, error) {
+	if _, err := InstallDefault(libraryPath); err != nil {
+		return nil, err
+	}
+	loader := &Loader{LibraryPath: libraryPath}
+	if worktree != "" {
+		loader.RepoPath = filepath.Join(worktree, ".argus", "rates.toml")
+	}
+	return loader.Load()
 }

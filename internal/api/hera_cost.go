@@ -144,13 +144,5 @@ func (s *Server) heraAppliedModel(task *model.Task) string {
 // precedence diligence profiles use (design.md Decision 3), installing the
 // embedded default to the library path first if absent.
 func (s *Server) heraRateTable(task *model.Task) (*pricing.Table, error) {
-	libraryPath := filepath.Join(db.DataDir(), "rates.toml")
-	if _, err := pricing.InstallDefault(libraryPath); err != nil {
-		return nil, err
-	}
-	loader := &pricing.Loader{LibraryPath: libraryPath}
-	if task.Worktree != "" {
-		loader.RepoPath = filepath.Join(task.Worktree, ".argus", "rates.toml")
-	}
-	return loader.Load()
+	return pricing.LoadInstalled(filepath.Join(db.DataDir(), "rates.toml"), task.Worktree)
 }
