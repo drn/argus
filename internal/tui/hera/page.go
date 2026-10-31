@@ -246,6 +246,9 @@ type HeraPage struct {
 	// OnInbox fires on `i` with the selection's focus task (a worker row's
 	// task, or a header's coordinator task); skipped when there is none.
 	OnInbox func(taskID string)
+	// OnMoveAccount fires on `>` with the selection's focus task, to move it
+	// to another account.
+	OnMoveAccount func(taskID string)
 
 	// OnCopyClipboard fires on `ctrl+y` whenever a TERMINAL pane (coordinator or
 	// worker) is focused, passing the focused pane's bound task ID — regardless
@@ -1463,6 +1466,14 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			}
 			if taskID := sel.FocusTaskID(); taskID != "" {
 				p.OnInbox(taskID)
+			}
+			return true
+		case keymap.ActHeraMoveAccount:
+			if p.OnMoveAccount == nil {
+				return false
+			}
+			if taskID := sel.FocusTaskID(); taskID != "" {
+				p.OnMoveAccount(taskID)
 			}
 			return true
 		}

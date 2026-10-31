@@ -48,9 +48,9 @@
 
 - [x] 8.1 Tests first: new-task form lists `auto` (after `default`) when a named account supports the backend, preselects it when the default is `auto`, submits `"auto"`, and reads skills from `~/.claude` while `auto` is selected
 - [x] 8.2 Implement the form change (local + remote account sources)
-- [ ] 8.3 Add `tasklist.move_account` / `hera_rail.move_account` (`>`) to `keymap` (defaultSpecs, actionLabels, contextOrder), dispatch cases, palette registries, and `TestHelpModal_Draw` assertions
-- [ ] 8.4 Tests first: picker modal lists `auto` + eligible accounts with usage labels ("—" unknown); notices for no selection / non-Claude / no other account; busy session opens the picker with an interrupt warning and sends force; confirm runs the move off the UI thread and then `startSession`; remote mode calls the REST endpoint; SimulationScreen smoke test for open → confirm → close
-- [ ] 8.5 Implement the picker modal and the move flow with `[account]` uxlog lines for success / failure
+- [x] 8.3 Add `tasklist.move_account` / `hera_rail.move_account` (`>`) to `keymap` (defaultSpecs, actionLabels, contextOrder), dispatch cases, palette registries, and `TestHelpModal_Draw` assertions
+- [x] 8.4 Tests first: picker modal lists `auto` + eligible accounts with usage labels ("—" unknown); notices for no selection / non-Claude / no other account; busy session opens the picker with an interrupt warning and sends force; confirm runs the move off the UI thread and then `startSession`; remote mode calls the REST endpoint; SimulationScreen smoke test for open → confirm → close
+- [x] 8.5 Implement the picker modal and the move flow with `[account]` uxlog lines for success / failure
 
 ## 9. Docs and verification
 

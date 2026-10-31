@@ -111,6 +111,9 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "view task artifacts")
 	testutil.Contains(t, body, "ctrl+t")
 	testutil.Contains(t, body, "view role's message inbox (read-only)")
+	// `>` account move (add-account-auto-routing) on both the task list and
+	// the Hera rail — the rescue path for an agent stuck on a usage cap.
+	testutil.Equal(t, strings.Count(body, "move to another account (resumes there)"), 2)
 	// Task-list `c` opens the copy menu (name / prompt) — fail the build if the
 	// binding text is silently reverted (keybinding-help contract).
 	testutil.Contains(t, body, "copy name / prompt")

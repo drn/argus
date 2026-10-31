@@ -87,6 +87,7 @@ const (
 	modeCommandPalette   // Global command palette (ctrl+k)
 	modeMergeSafetyPopup // Merge-safety review popup (single-role nuke / global Cleanup)
 	modeInbox            // Read-only task message inbox viewer (`i`)
+	modeAccountPicker    // Move-task-to-account picker (`>`)
 	modeArtifacts
 )
 
@@ -218,6 +219,12 @@ type App struct {
 	// Help overlay (created on demand)
 	helpModal    *modal.HelpModal
 	helpPrevPage string
+
+	// Move-to-account picker (`>`), add-account-auto-routing.
+	accountPicker         *modal.AccountPickerModal
+	accountPickerTask     *model.Task
+	accountPickerForce    bool
+	accountPickerPrevPage string
 
 	inboxModal          *modal.InboxModal
 	inboxTaskID         string
@@ -886,6 +893,7 @@ func (a *App) buildUI() {
 		a.openInbox(t.ID, t.Name)
 	}
 	a.tasklist.OnArtifacts = a.openArtifacts
+	a.tasklist.OnMoveAccount = func(t *model.Task) { a.openAccountPicker(t.ID) }
 
 	a.taskGitPanel = gitpanel.NewGitPanel()
 	a.taskGitPanel.OnBranchChange = func() { a.forceRedraw("task git panel branch changed") }
@@ -1020,6 +1028,7 @@ func (a *App) buildUI() {
 	// than panicking or silently no-oping.
 	a.heraPage.OnCleanup = a.heraOpenGlobalCleanup
 	a.heraPage.OnInbox = a.openInboxForTaskID
+	a.heraPage.OnMoveAccount = a.openAccountPicker
 
 	// Wire the hera panes' redraw callbacks exactly like the main agent pane:
 	// OnBranchChange is log-only (forceRedraw never Syncs), OnNeedRedraw bounces
@@ -4015,6 +4024,10 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Inbox viewer — delegate everything to the modal.
 	if a.mode == modeInbox && a.inboxModal != nil {
 		a.handleInboxKey(event)
+		return nil
+	}
+	if a.mode == modeAccountPicker && a.accountPicker != nil {
+		a.handleAccountPickerKey(event)
 		return nil
 	}
 	if a.mode == modeArtifacts && a.artifactBrowser != nil {

@@ -180,9 +180,12 @@ func (a *App) heraRailActionRegistry() map[keymap.Action]func() {
 	add(keymap.ActHeraNewCoord, a.heraPage.OnNewCoordinator)
 	add(keymap.ActHeraClear, a.heraPage.OnClearArchive)
 	add(keymap.ActHeraCleanup, a.heraPage.OnCleanup)
-	if cb := a.heraPage.OnInbox; cb != nil {
-		if taskID := sel.FocusTaskID(); taskID != "" {
+	if taskID := sel.FocusTaskID(); taskID != "" {
+		if cb := a.heraPage.OnInbox; cb != nil {
 			reg[keymap.ActHeraInbox] = func() { cb(taskID) }
+		}
+		if cb := a.heraPage.OnMoveAccount; cb != nil {
+			reg[keymap.ActHeraMoveAccount] = func() { cb(taskID) }
 		}
 	}
 	return reg
