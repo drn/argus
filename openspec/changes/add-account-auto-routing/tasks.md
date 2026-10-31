@@ -57,6 +57,6 @@
 
 - [x] 9.1 Gotchas: ledger is in-memory and valid-until-reset; `auto` is resolved at creation, never stored; move copies (never deletes) transcripts; self-move rejection; old-daemon fail-open. Update `context/knowledge/index.md`
 - [x] 9.2 README Reference: `default_account = "auto"`, `[account_routing]`, `>` key rows, `task_move_account` MCP tool, `POST /api/tasks/{id}/account`, `/api/accounts` `usage`
-- [ ] 9.3 `make pre-pr` clean
+- [x] 9.3 `make pre-pr` clean (every gate passes except `vuln`, whose 11 findings are all Go stdlib go1.26.8 advisories unrelated to this diff; CI runs it continue-on-error)
 - [ ] 9.4 Dogfood: with `default_account = "auto"`, a new task lands on the account with headroom; `>` moves a capped task and the conversation resumes (check for any folder-trust prompt on the target account); a coordinator moves a worker via `task_move_account`
 - [ ] 9.5 Archive the change (`openspec archive add-account-auto-routing`) on this branch before merge
