@@ -10,9 +10,9 @@
 
 ## 3. Move operation
 
-- [ ] 3.1 Port `agent.MoveTaskAccount` (guard, validation, transcript copy, persist-then-kick, rollback) with tests
-- [ ] 3.2 `auto` target: lowest current usage among other Claude-capable accounts (D3)
-- [ ] 3.3 Per-account usage source: daemon in-process, local TUI over a new `AccountUsage` RPC
+- [x] 3.1 Port `agent.MoveTaskAccount` (guard, validation, transcript copy, persist-then-kick, rollback) with tests
+- [x] 3.2 `auto` target: lowest current usage among other Claude-capable accounts (D3)
+- [x] 3.3 Per-account usage source: daemon in-process, local TUI over a new `AccountUsage` RPC
 
 ## 4. Surfaces
 
