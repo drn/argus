@@ -60,6 +60,10 @@ type TaskCreateInput struct {
 	// than chosen explicitly; an account that cannot run the backend fails the
 	// call instead of falling back (agent.CreateInput.InheritedAccount).
 	InheritedAccount bool
+
+	// SandboxOverride is the per-task sandbox tri-state: "" inherits the
+	// project / global default, "enabled" / "disabled" force it.
+	SandboxOverride string
 }
 
 // HeraSpawnInput is the payload the MCP hera_spawn_worker arm hands to the
@@ -660,19 +664,22 @@ Orchestration: pass ` + "`base_branch`" + ` to branch off a non-default ref (sta
 
 Account: the new task inherits the calling task's account when the caller is identifiable (pass ` + "`caller_id`" + ` from ARGUS_TASK_ID, or ` + "`cwd`" + `). Pass ` + "`account`" + ` to choose one explicitly ("default" included); an inherited account that cannot run the backend fails the call.
 
+Sandbox: pass ` + "`sandbox_override`" + ` ("enabled" | "disabled") to force the new task's sandbox on or off; omit to inherit the project / global default. "disabled" requires an identified (` + "`caller_id`" + ` or ` + "`cwd`" + `), unsandboxed calling task — a sandboxed or unidentified caller is rejected.
+
 Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) and a non-archived task with the same (name, project) already exists, the call errors unless ` + "`upsert: true`" + ` is set — in which case the existing task is returned unchanged. This keeps an orchestrator that restarts mid-loop from double-firing sub-tasks.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"name":        map[string]interface{}{"type": "string", "description": "Task name (used for branch/worktree naming). Auto-generated from prompt if omitted; idempotency check is skipped for auto-generated names."},
-				"prompt":      map[string]interface{}{"type": "string", "description": "Instructions for the agent"},
-				"project":     map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
-				"base_branch": map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
-				"model":       map[string]interface{}{"type": "string", "description": "Optional. Model override for the agent session (e.g. 'sonnet', 'opus', 'gpt-6-sol', or a provider-qualified 'anthropic/claude-opus-4-5'). Delivered through the backend's supported mechanism: --model for claude/codex/pi/antigravity/cursor, child-only OPENCODE_CONFIG_CONTENT for opencode (which takes provider/model ids). Empty = the backend's configured default."},
-				"upsert":      map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
-				"account":     map[string]interface{}{"type": "string", "description": "Optional. Configured account to run the task under ('default' or a name from config.toml [accounts]). Omit to inherit the calling task's account (when caller_id or cwd identifies it), else the project / global default."},
-				"caller_id":   map[string]interface{}{"type": "string", "description": "Optional. The calling task's ID (ARGUS_TASK_ID); the new task inherits its account unless account is passed."},
-				"cwd":         map[string]interface{}{"type": "string", "description": "Optional. Caller's worktree path (use $PWD); identifies the calling task when caller_id is omitted."},
+				"name":             map[string]interface{}{"type": "string", "description": "Task name (used for branch/worktree naming). Auto-generated from prompt if omitted; idempotency check is skipped for auto-generated names."},
+				"prompt":           map[string]interface{}{"type": "string", "description": "Instructions for the agent"},
+				"project":          map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
+				"base_branch":      map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
+				"model":            map[string]interface{}{"type": "string", "description": "Optional. Model override for the agent session (e.g. 'sonnet', 'opus', 'gpt-6-sol', or a provider-qualified 'anthropic/claude-opus-4-5'). Delivered through the backend's supported mechanism: --model for claude/codex/pi/antigravity/cursor, child-only OPENCODE_CONFIG_CONTENT for opencode (which takes provider/model ids). Empty = the backend's configured default."},
+				"upsert":           map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
+				"account":          map[string]interface{}{"type": "string", "description": "Optional. Configured account to run the task under ('default' or a name from config.toml [accounts]). Omit to inherit the calling task's account (when caller_id or cwd identifies it), else the project / global default."},
+				"caller_id":        map[string]interface{}{"type": "string", "description": "Optional. The calling task's ID (ARGUS_TASK_ID); the new task inherits its account unless account is passed."},
+				"cwd":              map[string]interface{}{"type": "string", "description": "Optional. Caller's worktree path (use $PWD); identifies the calling task when caller_id is omitted."},
+				"sandbox_override": map[string]interface{}{"type": "string", "description": "Optional. 'enabled' or 'disabled' forces the new task's sandbox; omit (or empty) to inherit the project / global default. 'disabled' is rejected unless caller_id or cwd identifies an unsandboxed calling task."},
 			},
 			"required": []string{"prompt", "project"},
 		},
@@ -1459,6 +1466,8 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		Account    string `json:"account"`
 		CallerID   string `json:"caller_id"`
 		Cwd        string `json:"cwd"`
+
+		SandboxOverride string `json:"sandbox_override"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -1467,6 +1476,11 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 	}
 	if p.Prompt == "" {
 		return toolError(id, "prompt is required")
+	}
+	sandboxOverride := strings.TrimSpace(p.SandboxOverride)
+	if err := s.taskCreateSandboxOverride(sandboxOverride, p.CallerID, p.Cwd); err != nil {
+		log.Printf("[mcp] task_create rejected: %v", err)
+		return toolError(id, err.Error())
 	}
 	account, inherited, err := s.taskCreateAccount(strings.TrimSpace(p.Account), p.CallerID, p.Cwd)
 	if err != nil {
@@ -1542,6 +1556,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		BaseBranch:       strings.TrimSpace(p.BaseBranch),
 		Account:          account,
 		InheritedAccount: inherited,
+		SandboxOverride:  sandboxOverride,
 	})
 	if err != nil {
 		log.Printf("[mcp] task_create failed: %v", err)
@@ -1550,6 +1565,30 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 
 	log.Printf("[mcp] task_create ok: id=%s name=%s status=%s", task.ID, task.Name, task.Status)
 	return toolResult(id, formatTaskCreatedSummary(task, "Task created"))
+}
+
+// taskCreateSandboxOverride validates task_create's sandbox_override. "disabled"
+// requires an identified, unsandboxed caller so a sandboxed agent cannot spawn
+// an unsandboxed one; an unidentifiable caller fails closed.
+func (s *Server) taskCreateSandboxOverride(override, callerID, cwd string) error {
+	switch override {
+	case "", "enabled":
+		return nil
+	case "disabled":
+	default:
+		return fmt.Errorf("sandbox_override %q is not one of \"\", \"enabled\", \"disabled\"", override)
+	}
+	if callerID == "" && cwd == "" {
+		return fmt.Errorf("sandbox_override \"disabled\" requires an identified calling task (pass caller_id or cwd)")
+	}
+	caller, err := s.resolveTask(callerID, cwd)
+	if err != nil {
+		return fmt.Errorf("sandbox_override \"disabled\" requires an identified calling task: %w", err)
+	}
+	if caller.Sandboxed {
+		return fmt.Errorf("sandbox_override \"disabled\" is not allowed from sandboxed task %s", caller.ID)
+	}
+	return nil
 }
 
 // accountConfigSource is the optional Config() seam account validation uses;
