@@ -224,14 +224,27 @@ func TestTaskToJSON_LiveWireField(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		live bool
-		want bool
-	}{{"live emitted", true, true}, {"not live omitted", false, false}} {
+		want string
+	}{{"live true", true, `"live":true`}, {"live false is explicit", false, `"live":false`}} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, err := json.Marshal(taskToJSON(task, taskRuntimeState{Idle: true, Live: tc.live}))
 			testutil.NoError(t, err)
-			testutil.Equal(t, strings.Contains(string(b), `"live":true`), tc.want)
+			testutil.Contains(t, string(b), tc.want)
 		})
 	}
+}
+
+func TestRuntimeState_PendingRestartNotLive(t *testing.T) {
+	srv, _ := testServer(t)
+	task := &model.Task{ID: "t1", Status: model.StatusInProgress}
+	running := map[string]bool{"t1": true}
+	rt := srv.runtimeState(task, running, map[string]bool{}, map[string]bool{})
+	testutil.Equal(t, rt.Live, true)
+
+	srv.runner.(*agent.Runner).SetPendingRestartForTest("t1", true)
+	rt = srv.runtimeState(task, running, map[string]bool{}, map[string]bool{})
+	testutil.Equal(t, rt.Idle, false)
+	testutil.Equal(t, rt.Live, false)
 }
 
 func TestHandleCreateTask(t *testing.T) {
@@ -4160,6 +4173,20 @@ func TestHandleResumeTask_StartFails(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resume", ""))
 	testutil.Equal(t, w.Code, http.StatusInternalServerError)
+}
+
+func TestHandleResumeTask_RefusesDuringRerenderRestart(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	task := &model.Task{Name: "restarting", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+	srv.runner.(*agent.Runner).SetPendingRestartForTest(task.ID, true)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resume", ""))
+	testutil.Equal(t, w.Code, http.StatusConflict)
+	testutil.Contains(t, w.Body.String(), "restarting")
 }
 
 // --- handleStreamOutput clipboard subscriber callback (sync drop-on-full) ---

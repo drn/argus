@@ -204,12 +204,14 @@ test.describe('isInteractive', () => {
       const f = (window as any).isInteractive;
       return [
         f({ status: 'in_progress', idle: true, live: true }),
-        f({ status: 'in_progress', idle: true }),
-        f({ status: 'in_progress' }),
+        f({ status: 'in_progress', idle: true, live: false }),
+        f({ status: 'in_progress', idle: false, live: false }), // mid kill+resume restart
+        f({ status: 'in_progress', idle: true }), // old daemon, no live field
+        f({ status: 'in_progress' }), // old daemon, no live field
         f({ status: 'complete', live: true }),
         f(null),
       ];
     });
-    expect(got).toEqual([true, false, true, false, false]);
+    expect(got).toEqual([true, false, false, false, true, false, false]);
   });
 });

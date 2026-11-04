@@ -2744,11 +2744,13 @@ function isCtrlZ(ev) {
 
 // isInteractive reports whether a task has a live PTY that accepts input.
 // `idle` alone is not enough: a session parked at a prompt reports idle:true
-// but is exactly when the user wants the compose bar and key bar. Falls back
-// to !idle for an older daemon that doesn't send `live`.
+// but is exactly when the user wants the compose bar and key bar, while a
+// task mid kill+resume restart reports idle:false with no session at all.
+// The daemon's `live` field is authoritative; only an older daemon that
+// doesn't send it falls back to !idle.
 function isInteractive(t) {
   if (!t || t.status !== 'in_progress') return false;
-  return t.live === true || !t.idle;
+  return typeof t.live === 'boolean' ? t.live : !t.idle;
 }
 
 function setupTerm() {
@@ -3386,12 +3388,14 @@ async function pollAndRecoverFromRerenderExit(id) {
       });
       if (res.ok) {
         const t = await res.json();
-        // Status-only check: idle is set true if the new session has been
-        // alive but quiet for >3s. attachTerminal handles both states fine
-        // (idle path replays static-output, active path opens SSE) — gating
-        // on !idle here would falsely declare "session ended" for a healthy
-        // resumed session that simply hasn't emitted output yet.
-        if (t.status === 'in_progress') {
+        // Wait for the restarted session to actually exist. Status stays
+        // in_progress through the whole kill+resume gap, so a status-only
+        // check attached immediately: the compose bar mounted over a stream
+        // that 404s (EventSource does not retry an HTTP error), leaving a
+        // dead "disconnected" terminal. isInteractive is true for a live
+        // session however quiet it is, so a healthy resumed session that
+        // hasn't emitted output yet is not mistaken for "session ended".
+        if (isInteractive(t)) {
           currentTask = t;
           window.currentTask = t;
           attachTerminal(t);
