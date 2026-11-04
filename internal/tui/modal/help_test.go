@@ -72,6 +72,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "fan group; open member/leaf, drill sub-coord")
 	testutil.Contains(t, body, "collapse fanned group / drill out to parent plan")
 	testutil.Contains(t, body, "File Panel")
+	testutil.Contains(t, body, "back to projects; Esc again cancels")
 	testutil.Contains(t, body, "Settings")
 	testutil.Contains(t, body, "cycle tier account")
 	testutil.Contains(t, body, "[esc / ?] close")

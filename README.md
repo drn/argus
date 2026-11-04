@@ -301,10 +301,13 @@ End-of-life has **two resting states**, and **no DB row is ever hard-deleted** â
 | Key                 | Action           |
 | ------------------- | ---------------- |
 | `Esc` / `ctrl+q`    | Close / cancel   |
+| `Esc` (Project first) | Close autocomplete first, then return to project selection with prompt/name preserved; `Esc` again cancels. `ctrl+q` cancels outright. |
 | `Enter`             | Confirm / submit |
 | `Tab` / `Shift+Tab` | Navigate fields  |
 
 #### Settings
+
+**Appearance â†’ Project first** (`ui.project_first`, default `false`) asks for a project before new tasks and coordinators when multiple projects exist. The empty filter starts with the current project highlighted, followed by recent projects, then unused projects alphabetically. Enter continues to the prompt. Worker spawn keeps its existing flow. This preference affects the local TUI only; remote TUI, web, and macOS support are named follow-ups.
 
 The **Bridge** section provides **Enabled**, **Message delivery**, **Hera band** and **Message toasts** toggles in local and remote TUI mode. Message delivery applies immediately to new deliveries and budget nudges; the band and toasts apply in running sessions within about 15 seconds (or at the next turn); the master switch also controls loading the mod into new sessions and gates the other three. Config-file values override Settings. Web and macOS Bridge settings controls are a named follow-up.
 

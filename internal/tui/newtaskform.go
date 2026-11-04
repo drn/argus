@@ -18,6 +18,7 @@ import (
 	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 const (
@@ -47,15 +48,18 @@ const acMaxVisible = 6
 // NewTaskForm is a modal form for creating new tasks in the tcell runtime.
 type NewTaskForm struct {
 	*tview.Box
-	title        string // modal title (defaults to " New Task "); set via SetTitle
-	projectNames []string
-	backendNames []string
-	backendIdx   int
-	prompt       []rune // raw prompt text
-	cursorPos    int    // cursor position in prompt runes
-	scrollOffset int    // first visible wrapped line (for scrolling)
-	promptWidth  int    // cached inner width from last Draw, used by cursor movement
-	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=profile, 5=archetype, 6=sandbox, 7=prompt, 8=name
+	title            string // modal title (defaults to " New Task "); set via SetTitle
+	projectNames     []string
+	projectFirst     bool     // this popup passed through project selection
+	projectStep      bool     // currently displaying only the project question
+	projectStepOrder []string // default first, then recent, then alphabetical
+	backendNames     []string
+	backendIdx       int
+	prompt           []rune // raw prompt text
+	cursorPos        int    // cursor position in prompt runes
+	scrollOffset     int    // first visible wrapped line (for scrolling)
+	promptWidth      int    // cached inner width from last Draw, used by cursor movement
+	focused          int    // 0=project, 1=branch, 2=backend, 3=model, 4=profile, 5=archetype, 6=sandbox, 7=prompt, 8=name
 
 	// optional task-name field: a single-line input rendered after the prompt.
 	// Empty (or whitespace-only) ⇒ the task name is derived from the prompt as
@@ -696,7 +700,13 @@ func (f *NewTaskForm) acTrigger() string {
 func (f *NewTaskForm) updateProjectAC() {
 	input := strings.ToLower(string(f.projInput))
 	f.projACMatches = nil
-	for _, name := range f.projectNames {
+	names := f.projectNames
+	if f.projectStep {
+		names = f.projectStepOrder
+		f.projACIdx = 0
+		f.projACScroll = 0
+	}
+	for _, name := range names {
 		if input == "" || strings.Contains(strings.ToLower(name), input) {
 			f.projACMatches = append(f.projACMatches, name)
 		}
@@ -1041,6 +1051,22 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 	return f.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 		// Clear error on any keypress
 		f.errMsg = ""
+		if f.projectStep {
+			f.handleProjectStepKey(event)
+			return
+		}
+		// Only popups that actually used the project step gain back navigation.
+		if f.projectFirst {
+			if event.Key() == tcell.KeyCtrlQ {
+				f.canceled = true
+				uxlog.Log("[newtask] project-first canceled from full form")
+				return
+			}
+			if event.Key() == tcell.KeyEscape && !f.acOpen && !f.projACOpen && !f.branchACOpen {
+				f.openProjectStep(f.resolveProject())
+				return
+			}
+		}
 
 		// Global form keys
 		switch event.Key() {
@@ -1894,6 +1920,10 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	if sw <= 0 || sh <= 0 {
 		return
 	}
+	if f.projectStep {
+		f.drawProjectStep(screen, sx, sy, sw, sh)
+		return
+	}
 
 	// Modal dimensions
 	modalW := min(60, sw-4)
@@ -2128,6 +2158,9 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Help text
 	help := "Enter submit  Tab next  Esc cancel"
+	if f.projectFirst {
+		help = "Enter submit  Tab next  Esc projects  Ctrl+Q cancel"
+	}
 	widget.DrawText(screen, innerX, row, innerW, help, theme.StyleDimmed)
 }
 

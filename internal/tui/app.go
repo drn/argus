@@ -5807,9 +5807,7 @@ func (a *App) buildNewTaskForm(defaultProject string) *NewTaskForm {
 			branches := gitutil.ListRemoteBranches(path)
 			uxlog.Log("[newtask] loaded %d branches for %s", len(branches), path)
 			a.tapp.QueueUpdateDraw(func() {
-				if a.newTaskForm != nil {
-					a.newTaskForm.SetBranchOptions(branches)
-				}
+				a.applyNewTaskBranches(f, path, branches)
 			})
 		}()
 	}
@@ -5914,6 +5912,7 @@ func accountOptionsFromRemote(list []apiclient.AccountJSON) ([]AccountOption, ma
 // onNewTask opens the new task form (Tasks tab, default create-and-start path).
 func (a *App) onNewTask() {
 	a.newTaskForm = a.buildNewTaskForm(a.tasklist.SelectedProject())
+	a.setupProjectFirst(a.newTaskForm)
 	a.newTaskReturnPage = "tasks"
 	// Trigger initial branch load for the default project.
 	a.newTaskForm.maybeLoadBranches()
@@ -5945,6 +5944,9 @@ func (a *App) openHeraNewTaskForm(title, defaultProject string, hideArchetype bo
 	// always the `orchestrator` archetype, set programmatically); the worker prompt
 	// shows it.
 	a.newTaskForm.SetHideArchetype(hideArchetype)
+	if hideArchetype { // coordinator creation; worker spawn retains its existing flow
+		a.setupProjectFirst(a.newTaskForm)
+	}
 	a.newTaskOnDone = onDone
 	a.newTaskReturnPage = "hera"
 	a.newTaskForm.maybeLoadBranches()

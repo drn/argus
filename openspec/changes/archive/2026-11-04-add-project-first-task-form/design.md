@@ -16,10 +16,13 @@
 
 ## Decisions
 
-- Represent the project question as an opt-in phase of `NewTaskForm`, rather than a separate picker widget. This reuses project input, candidate navigation, drawing, and `PasteHandler` without maintaining a second selector. Enter leaves the phase only after resolving a valid project; Escape cancels before ordinary candidate-dismiss handling.
+- Represent the project question as an opt-in phase of `NewTaskForm`, rather than a separate picker widget. Reuse project input, matching, candidate navigation, drawing, and `PasteHandler`. Start with an empty filter and list open; highlight the default or first row. Input changes reset the highlight to the first match. Enter accepts a candidate and advances; Escape cancels before candidate-dismiss handling.
+- Keep a separate project-step ordering: entry-point default first, then maximum `Task.CreatedAt` per project from the existing task list, then alphabetical ties/unused projects. Preserve ordering through filtering and leave the full field alphabetical; add no storage.
+- Remember whether the popup passed through the project step. Escape from that full form closes autocomplete first, then returns to an empty-filter project step highlighting the current project; preserve prompt/name. Ctrl+Q cancels outright for this flow. Disabled and bypassed popups retain existing behavior.
 - Activate that phase at the task/coordinator opening sites with explicit scope, rather than unconditionally in `buildNewTaskForm`. The shared builder also serves worker spawn, which is deliberately excluded. Single/zero-project cases bypass the phase.
 - Run acceptance through the same project-change helper used by the full form, then clear the candidate popup and focus the prompt. Do not duplicate dependent-default rules or alter backend/account/sandbox semantics. Compare both selection routes in tests.
 - Add `UI.ProjectFirst` / `ui.project_first` and a Settings Appearance row alongside the existing UI toggles. Read the effective config when opening a popup, avoiding a second cached preference in App.
+- Apply only for a local DB; remote creation always bypasses the phase. Match sibling remote Appearance toggles' cosmetic/log-only persistence failure behavior. Remote support is a named follow-up (coordinator decision, message 20932), with no REST changes.
 
 ## Risks / Trade-offs
 

@@ -5,9 +5,10 @@ The new-task and new-coordinator popups start at the prompt with a remembered pr
 ## What changes
 
 - Add `ui.project_first`, default false, with a persistent “Project first” toggle in TUI Settings → Appearance.
-- When enabled and more than one project is available, show only the existing project typeahead interaction before the task or coordinator form. Preserve today's entry-point-specific default project.
+- When enabled and more than one project is available, show a project question with an empty typeahead filter and open candidate list. Highlight today's entry-point default; order it first, then recently used projects from existing task history, then unused projects alphabetically.
 - Enter accepts a valid project through the full form's existing project-change path, reveals the existing full form, and focuses the prompt. Keep its project field editable.
 - Escape cancels the entire popup without creating anything or carrying temporary selection into another opening.
+- Escape from a full form reached through the project step returns to project selection while preserving prompt/name; open autocomplete closes first. Ctrl+Q cancels outright. The disabled flow and full form's own project field remain unchanged.
 - Skip the question for a single project or an entry point with a fixed project. With the preference disabled, preserve existing defaults, focus, and navigation exactly.
 
 ## Capabilities
@@ -29,6 +30,7 @@ The new-task and new-coordinator popups start at the prompt with a remembered pr
 
 ## Non-goals
 
+- **Remote TUI follow-up: project-first remote preference support.** In `--remote` mode creation behaves as OFF. The Appearance toggle follows sibling UI preferences (cosmetic changes, failed persistence logged, refresh restores the server value); no REST settings extension is included.
 - **Web follow-up: project-first web task creation.** Evaluate an equivalent opt-in destination-first flow in the web SPA separately; this change addresses TUI keyboard traversal and does not alter web creation or settings.
 - **macOS follow-up: project-first macOS task creation.** Evaluate an equivalent opt-in destination-first flow in the native app separately; this change does not alter macOS creation or settings.
 - **Hera worker spawn:** Keep the rail's `w` action and its command-palette equivalent on the current full-form flow. They begin in the selected coordinator's project and create a worker under that coordinator rather than an independent task/coordinator. The full form's project field remains editable as today.
