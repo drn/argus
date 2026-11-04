@@ -40,6 +40,11 @@ func TestSettingsProposals_ApproveProject(t *testing.T) {
 
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 	ps, _ := d.Projects()
+	testutil.Equal(t, len(ps["op"].Sandbox.ExtraWrite), 0) // flagged: first Enter only arms
+	testutil.Contains(t, sv.proposalMsg, "press Enter again")
+	testutil.Contains(t, sv.rows[sv.cursor].label, "⚠ Proposal")
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	ps, _ = d.Projects()
 	testutil.DeepEqual(t, ps["op"].Sandbox.ExtraWrite, []string{"~/.gem", "~/.ssh/x"})
 	testutil.Contains(t, sv.proposalMsg, "NEW sessions")
 	testutil.Contains(t, sv.proposalMsg, "Warning")
@@ -53,6 +58,9 @@ func TestSettingsProposals_ToggleScopeGlobal(t *testing.T) {
 	propKey(sv, 'e')
 	testutil.Contains(t, sv.rows[sv.cursor].label, "project op")
 	propKey(sv, 'e')
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // global: arms
+	v0, _ := d.GetConfigValue("sandbox.extra_write")
+	testutil.Equal(t, v0, "")
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 	v, _ := d.GetConfigValue("sandbox.extra_write")
 	testutil.Equal(t, v, "~/.gem")
@@ -126,6 +134,8 @@ func TestSettingsProposals_Remote(t *testing.T) {
 	sv.focus = focusPane
 	selectRowInCategory(t, sv, catSandbox, srSandboxProposal, "")
 	testutil.Contains(t, sv.rows[sv.cursor].label, "global")
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, fake.approved, "")
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 	testutil.Equal(t, fake.approved, "p9:global")
 	selectRowInCategory(t, sv, catSandbox, srSandboxProposal, "")

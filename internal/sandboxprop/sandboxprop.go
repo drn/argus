@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"unicode"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
@@ -48,6 +50,27 @@ type ApproveResult struct {
 	TakesEffect    string              `json:"takes_effect"`
 }
 
+// validPath trims, drops a trailing slash so ~/x and ~/x/ dedupe, and rejects
+// malformed paths including invisible/bidi runes that ValidateWritePath's
+// control-character check lets through.
+func validPath(raw string) (string, string) {
+	p := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if p == "" {
+		p = strings.TrimSpace(raw)
+	}
+	if reason := agent.ValidateWritePath(p); reason != "" {
+		return p, reason
+	}
+	for _, r := range p {
+		if !unicode.IsPrint(r) {
+			return p, "non-printable characters are not allowed"
+		}
+	}
+	return p, ""
+}
+
+var applyMu sync.Mutex
+
 // Propose validates items and records a pending proposal. It never changes
 // sandbox config. Malformed paths reject the whole call.
 func Propose(d *db.DB, task *model.Task, items []Item) (*ProposeResult, error) {
@@ -62,8 +85,8 @@ func Propose(d *db.DB, task *model.Task, items []Item) (*ProposeResult, error) {
 	var entries []db.SandboxProposalEntry
 	var warnings []string
 	for _, it := range items {
-		p := strings.TrimSpace(it.Path)
-		if reason := agent.ValidateWritePath(p); reason != "" {
+		p, reason := validPath(it.Path)
+		if reason != "" {
 			bad = append(bad, fmt.Sprintf("%s: %s", p, reason))
 			continue
 		}
@@ -127,8 +150,8 @@ func Approve(d *db.DB, id, scope string, edited []string, by string) (*ApproveRe
 	var clean, warnings []string
 	seen := map[string]bool{}
 	for _, p := range paths {
-		p = strings.TrimSpace(p)
-		if reason := agent.ValidateWritePath(p); reason != "" {
+		p, reason := validPath(p)
+		if reason != "" {
 			return nil, fmt.Errorf("invalid path %s: %s", p, reason)
 		}
 		if seen[p] {
@@ -144,8 +167,19 @@ func Approve(d *db.DB, id, scope string, edited []string, by string) (*ApproveRe
 		return nil, errors.New("no paths to approve")
 	}
 
+	// Serialize read-modify-write of the list within this process; the list is
+	// re-read after the status flip so a concurrent approval is not clobbered.
+	applyMu.Lock()
+	defer applyMu.Unlock()
+	if _, err := currentList(d, scope, prop.Project); err != nil {
+		return nil, err
+	}
+	if err := d.DecideSandboxProposal(id, db.SandboxProposalApproved, scope, clean, by); err != nil {
+		return nil, err
+	}
 	existing, err := currentList(d, scope, prop.Project)
 	if err != nil {
+		_ = d.RevertSandboxProposal(id)
 		return nil, err
 	}
 	have := map[string]bool{}
@@ -159,10 +193,6 @@ func Approve(d *db.DB, id, scope string, edited []string, by string) (*ApproveRe
 		} else {
 			applied = append(applied, p)
 		}
-	}
-
-	if err := d.DecideSandboxProposal(id, db.SandboxProposalApproved, scope, applied, by); err != nil {
-		return nil, err
 	}
 	if len(applied) > 0 {
 		if err := writeList(d, scope, prop.Project, append(existing, applied...)); err != nil {

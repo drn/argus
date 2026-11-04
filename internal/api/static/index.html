@@ -6494,6 +6494,10 @@ async function decideSandboxProposal(id, action, btn) {
     const paths = d.rows.map(r => r.path.trim()).filter(Boolean);
     if (!paths.length) { out.textContent = 'Add at least one path to approve (or reject the proposal).'; return; }
     body = { scope: d.scope, paths };
+    const flagged = d.rows.filter(r => r.warning).map(r => r.path.trim() + ' (' + r.warning + ')');
+    if ((flagged.length || d.scope === 'global') &&
+        !window.confirm('Grant ' + d.scope + ' write access to:\n' + paths.join('\n') +
+          (flagged.length ? '\n\nFLAGGED:\n' + flagged.join('\n') : '') + '\n\nContinue?')) return;
   }
   const card = btn.closest('.sbx-card');
   if (card) card.querySelectorAll('button').forEach(b => { b.disabled = true; });

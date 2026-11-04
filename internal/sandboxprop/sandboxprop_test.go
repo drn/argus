@@ -1,7 +1,10 @@
 package sandboxprop
 
 import (
-	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
@@ -135,9 +138,6 @@ func TestApprove_Errors(t *testing.T) {
 	testutil.NoError(t, err)
 	_, err = Approve(d, res.Proposal.ID, "", nil, "m")
 	testutil.ErrorIs(t, err, db.ErrSandboxProposalDecided)
-	if !errors.Is(err, db.ErrSandboxProposalDecided) {
-		t.Fatal("want decided")
-	}
 }
 
 func TestApprove_NoProjectNeedsGlobal(t *testing.T) {
@@ -169,4 +169,67 @@ func TestReject(t *testing.T) {
 	testutil.Equal(t, len(projectList(t, d)), 0)
 	_, err = Reject(d, res.Proposal.ID, "master")
 	testutil.ErrorIs(t, err, db.ErrSandboxProposalDecided)
+}
+
+func TestValidPath_NormalizesAndRejectsInvisible(t *testing.T) {
+	d, task := setup(t)
+	_, err := Propose(d, task, []Item{{Path: "~/.gem/"}, {Path: "~/.gem"}})
+	testutil.NoError(t, err)
+	l, _ := d.ListSandboxProposals("")
+	testutil.DeepEqual(t, []string{l[0].Entries[0].Path}, []string{"~/.gem"})
+	testutil.Equal(t, len(l[0].Entries), 1)
+
+	for _, bad := range []string{"~/.gem\u202e", "~/a\u200bb", "~/a\u2028b"} {
+		_, err := Propose(d, task, []Item{{Path: bad}})
+		testutil.Equal(t, err != nil, true)
+	}
+}
+
+func TestPropose_SymlinkToSensitiveWarns(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	testutil.NoError(t, os.MkdirAll(filepath.Join(home, ".ssh"), 0o700))
+	link := filepath.Join(t.TempDir(), "x")
+	testutil.NoError(t, os.Symlink(filepath.Join(home, ".ssh"), link))
+	d, task := setup(t)
+	res, err := Propose(d, task, []Item{{Path: link}})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(res.Warnings), 1)
+	testutil.Contains(t, res.Warnings[0], "resolves to")
+}
+
+func TestApprove_ConcurrentKeepsAllPaths(t *testing.T) {
+	d, task := setup(t)
+	var ids []string
+	for _, p := range []string{"~/.a1", "~/.a2", "~/.a3", "~/.a4"} {
+		r, err := Propose(d, task, []Item{{Path: p}})
+		testutil.NoError(t, err)
+		ids = append(ids, r.Proposal.ID)
+	}
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := Approve(d, id, "", nil, "m")
+			testutil.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	testutil.Equal(t, len(projectList(t, d)), 4)
+}
+
+func TestPropose_ParallelRespectsCap(t *testing.T) {
+	d, task := setup(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 25; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			Propose(d, task, []Item{{Path: fmt.Sprintf("~/.p%d", i)}}) //nolint:errcheck
+		}()
+	}
+	wg.Wait()
+	l, _ := d.ListSandboxProposals("pending")
+	testutil.Equal(t, len(l), db.MaxPendingSandboxProposalsPerTask)
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/sandboxprop"
 	"github.com/drn/argus/internal/testutil"
@@ -56,7 +57,7 @@ func TestNoSandboxDecisionTool(t *testing.T) {
 			testutil.Equal(t, name, "sandbox_propose_write_paths")
 		}
 		for _, bad := range []string{"approve", "reject", "apply"} {
-			if strings.Contains(name, bad) && strings.Contains(name, "sandbox") {
+			if strings.Contains(name, bad) && (strings.Contains(name, "sandbox") || strings.Contains(name, "proposal")) {
 				t.Fatalf("agent-reachable decision tool exposed: %s", name)
 			}
 		}
@@ -66,7 +67,7 @@ func TestNoSandboxDecisionTool(t *testing.T) {
 func TestSandboxPropose_Call(t *testing.T) {
 	s, _, _ := testServerWithTasks()
 	m := &mockProposer{res: &sandboxprop.ProposeResult{Warnings: []string{"~/.ssh: sensitive"}}}
-	m.res.Proposal = newProposalForTest("p1")
+	m.res.Proposal = &db.SandboxProposal{ID: "p1", Status: db.SandboxProposalPending}
 	s.SetSandboxProposer(m)
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "sandbox_propose_write_paths",

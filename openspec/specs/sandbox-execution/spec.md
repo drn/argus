@@ -345,7 +345,7 @@ The system SHALL report on approval that granted paths apply to newly started se
 
 ### Requirement: Approval surfaces in TUI and web
 
-The web SPA (Settings panel) and the macOS app (Settings > Sandbox tab) SHALL list pending proposals with paths, warnings, reasons and requesting task, with approve (project or global, with editable paths) and reject actions. The TUI (Settings > Sandbox rows) SHALL list them with approve, a project/global scope toggle, and reject; free-form path editing in the TUI is done through the existing extra-write rows, which need no approval.
+The web SPA (Settings panel) and the macOS app (Settings > Sandbox tab) SHALL list pending proposals with paths, warnings, reasons and requesting task, with approve (project or global, with editable paths) and reject actions. The TUI (Settings > Sandbox rows) SHALL list them with approve, a project/global scope toggle, and reject; free-form path editing in the TUI is done through the existing extra-write rows, which need no approval. Every surface SHALL require a second confirming action before approving a proposal that has a warning or uses global scope (macOS has no default-action Return shortcut on Approve).
 
 #### Scenario: Pending count visible
 

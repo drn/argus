@@ -1282,3 +1282,9 @@ func TestSandboxPathWarning(t *testing.T) {
 		})
 	}
 }
+
+func TestSandboxPathWarning_CaseInsensitiveAndRoots(t *testing.T) {
+	for _, p := range []string{"~/.SSH", "~/Library/Application Support", "/private/etc", "/Volumes"} {
+		testutil.Equal(t, SandboxPathWarning(p) != "", true)
+	}
+}

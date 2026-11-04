@@ -106,14 +106,14 @@ func proposalRowLabel(p *db.SandboxProposal, scope string) string {
 	for i, e := range p.Entries {
 		paths[i] = e.Path
 		if e.Warning != "" {
-			warn = " ⚠"
+			warn = "⚠ "
 		}
 	}
 	to := "global"
 	if scope == sandboxprop.ScopeProject {
 		to = "project " + p.Project
 	}
-	return fmt.Sprintf("Proposal → %s: %s%s", to, strings.Join(paths, ", "), warn)
+	return stripControlRunes(fmt.Sprintf("%sProposal → %s: %s", warn, to, strings.Join(paths, ", ")))
 }
 
 // handleApproveProposal approves the selected proposal at its current scope.
@@ -123,6 +123,12 @@ func (sv *SettingsView) handleApproveProposal() bool {
 	if p == nil || b == nil {
 		return false
 	}
+	if proposalNeedsConfirm(p, sv.proposalScope(p)) && sv.proposalArmed != p.ID {
+		sv.proposalArmed = p.ID
+		sv.proposalMsg = "⚠ Flagged/global grant — press Enter again to confirm."
+		return true
+	}
+	sv.proposalArmed = ""
 	res, err := b.ApproveSandboxProposal(p.ID, sv.proposalScope(p), nil)
 	if err != nil {
 		sv.proposalMsg = "Approve failed: " + err.Error()
@@ -137,6 +143,20 @@ func (sv *SettingsView) handleApproveProposal() bool {
 	return true
 }
 
+// proposalNeedsConfirm is true when approval should take a second keypress:
+// any flagged entry, or a global-scope grant.
+func proposalNeedsConfirm(p *db.SandboxProposal, scope string) bool {
+	if scope == sandboxprop.ScopeGlobal {
+		return true
+	}
+	for _, e := range p.Entries {
+		if e.Warning != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // handleRejectProposal rejects the selected proposal.
 func (sv *SettingsView) handleRejectProposal() bool {
 	p := sv.proposalForRow(sv.currentRow())
@@ -144,6 +164,7 @@ func (sv *SettingsView) handleRejectProposal() bool {
 	if p == nil || b == nil {
 		return false
 	}
+	sv.proposalArmed = ""
 	if err := b.RejectSandboxProposal(p.ID); err != nil {
 		sv.proposalMsg = "Reject failed: " + err.Error()
 		uxlog.Log("[sandbox-proposal] tui reject failed: id=%s err=%v", p.ID, err)
@@ -168,6 +189,7 @@ func (sv *SettingsView) handleToggleProposalScope() bool {
 		sv.proposalScopes = map[string]string{}
 	}
 	sv.proposalScopes[p.ID] = next
+	sv.proposalArmed = ""
 	sv.rebuildRows()
 	return true
 }
@@ -185,7 +207,7 @@ func (sv *SettingsView) renderProposalDetail(screen tcell.Screen, x, y, w, h int
 			line++
 		}
 	}
-	put("Task: "+p.TaskID+"  Project: "+p.Project, theme.StyleDimmed)
+	put("Task: "+stripControlRunes(p.TaskID)+"  Project: "+stripControlRunes(p.Project), theme.StyleDimmed)
 	put("Approve scope: "+sv.proposalScope(p), tcell.StyleDefault.Foreground(theme.ColorTitle))
 	line++
 	for _, e := range p.Entries {

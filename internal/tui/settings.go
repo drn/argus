@@ -280,6 +280,7 @@ type SettingsView struct {
 	proposalList            []*db.SandboxProposal
 	proposalScopes          map[string]string
 	proposalMsg             string
+	proposalArmed           string
 	sandboxAllowAppleEvents []string
 
 	// KB.

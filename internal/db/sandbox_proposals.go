@@ -61,7 +61,15 @@ func pathKey(entries []SandboxProposalEntry) string {
 // AddSandboxProposal records a pending proposal. A pending proposal from the
 // same task with an identical path set is returned instead (merged=true).
 func (d *DB) AddSandboxProposal(taskID, project string, entries []SandboxProposalEntry) (*SandboxProposal, bool, error) {
-	pending, err := d.ListSandboxProposals(SandboxProposalPending)
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		return nil, false, err
+	}
+	// The cap/merge check and the insert share one lock so parallel proposals
+	// from the same task cannot both pass the check.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	pending, err := d.listSandboxProposalsLocked(SandboxProposalPending)
 	if err != nil {
 		return nil, false, err
 	}
@@ -78,13 +86,7 @@ func (d *DB) AddSandboxProposal(taskID, project string, entries []SandboxProposa
 	if n >= MaxPendingSandboxProposalsPerTask {
 		return nil, false, ErrSandboxProposalCap
 	}
-	raw, err := json.Marshal(entries)
-	if err != nil {
-		return nil, false, err
-	}
 	p := &SandboxProposal{ID: generateID(), TaskID: taskID, Project: project, Entries: entries, Status: SandboxProposalPending, CreatedAt: time.Now().UTC()}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	if _, err := d.conn.Exec(`INSERT INTO sandbox_proposals (id, task_id, project, entries, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)`,
 		p.ID, taskID, project, string(raw), p.CreatedAt.Format(time.RFC3339Nano)); err != nil {
 		return nil, false, err
@@ -117,6 +119,10 @@ func scanSandboxProposal(r rowScanner) (*SandboxProposal, error) {
 func (d *DB) ListSandboxProposals(status string) ([]*SandboxProposal, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.listSandboxProposalsLocked(status)
+}
+
+func (d *DB) listSandboxProposalsLocked(status string) ([]*SandboxProposal, error) {
 	q := `SELECT ` + sandboxProposalCols + ` FROM sandbox_proposals`
 	var args []any
 	if status != "" {

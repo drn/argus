@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -68,4 +69,24 @@ func TestSandboxProposals_API(t *testing.T) {
 	testutil.Equal(t, do(srv.token, "POST", b3, `{"paths":["relative"]}`).Code, http.StatusBadRequest)
 	testutil.Equal(t, do(srv.token, "POST", b3, `{"scope":"global","paths":["~/.cocoapods"]}`).Code, http.StatusOK)
 	testutil.Equal(t, do(srv.token, "POST", "/api/sandbox/proposals/nope/approve", "").Code, http.StatusNotFound)
+}
+
+func TestSandboxProposals_NotDecidableViaReadOnlyGet(t *testing.T) {
+	srv, d := testServer(t)
+	testutil.NoError(t, d.SetProject("op", config.Project{Path: "/tmp/op"}))
+	res, err := sandboxprop.Propose(d, &model.Task{ID: "t1", Project: "op"}, []sandboxprop.Item{{Path: "~/.gem"}})
+	testutil.NoError(t, err)
+	for _, action := range []string{"approve", "reject"} {
+		out, err := srv.ReadOnlyGet(context.Background(), "/api/sandbox/proposals/"+res.Proposal.ID+"/"+action)
+		testutil.NoError(t, err)
+		testutil.Equal(t, out.Status, http.StatusNotFound)
+	}
+	p, _ := d.GetSandboxProposal(res.Proposal.ID)
+	testutil.Equal(t, p.Status, "pending")
+	ps, _ := d.Projects()
+	testutil.Equal(t, len(ps["op"].Sandbox.ExtraWrite), 0)
+
+	out, err := srv.ReadOnlyGet(context.Background(), "/api/sandbox/proposals")
+	testutil.NoError(t, err)
+	testutil.Equal(t, out.Status, http.StatusOK)
 }

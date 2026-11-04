@@ -484,8 +484,19 @@ test.describe('sandbox write-path proposals', () => {
   });
 
   test('403 says a master token is required', async ({ page }) => {
+    page.on('dialog', d => d.accept());
     await open(page, 403);
     await page.locator('.sbx-card button.primary').click();
     await expect(page.locator('#sbx-result')).toContainText('master token is required');
   });
+
+  test('flagged proposal needs confirmation; cancel sends nothing', async ({ page }) => {
+    let dialogMsg = '';
+    page.on('dialog', d => { dialogMsg = d.message(); d.dismiss(); });
+    const approveBody = await open(page);
+    await page.locator('.sbx-card button.primary').click();
+    expect(dialogMsg).toContain('FLAGGED');
+    expect(approveBody()).toBeNull();
+  });
 });
+

@@ -123,7 +123,6 @@ private struct SandboxProposalCard: View {
                 Button("Reject") { act { try await app.rejectSandboxProposal(id: proposal.id) } }
                     .disabled(busy)
                 Button("Approve") { approve() }
-                    .keyboardShortcut(.defaultAction)
                     .disabled(busy || problem != nil)
                     .help(problem ?? "Approve for \(scope) scope")
             }
