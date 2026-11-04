@@ -2898,6 +2898,9 @@ function setupTerm() {
 // message body, then recordInputBytes('\r') flushes the entry.
 function postInputBytes(taskId, data) {
   recordInputBytes(taskId, data);
+  if (restartQueue && restartQueue.taskId === taskId) {
+    return Promise.resolve(enqueueRestartInput(data));
+  }
   return fetch(API + `/api/tasks/${taskId}/input`, {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'text/plain' },
@@ -2908,6 +2911,71 @@ function postInputBytes(taskId, data) {
 function sendInputBytes(data) {
   if (!currentTask) return;
   postInputBytes(currentTask.id, data).catch(() => {});
+}
+
+// --- Input queue across a daemon-initiated rerender restart ---
+//
+// A width change makes the daemon kill and resume the agent (kill+resume so
+// scrollback re-flows). For ~1-3s there is no session: /input 404s and input
+// would be silently lost even though the compose bar and key bar are still
+// mounted. While a restart is in flight, postInputBytes (the single exit
+// point for compose, typed keys, key bar and upload paths) appends to this
+// queue instead; it flushes, in order, once the NEW session's stream opens.
+// Entry boundaries are preserved because compose's text→CR submit must stay
+// two separate PTY writes (see sendCompose).
+const RESTART_QUEUE_MAX_BYTES = 64 * 1024; // mirrors the server's /input body cap
+const RESTART_QUEUE_WATCHDOG_MS = 25000;   // > recovery deadline (15s) + slack
+let restartQueue = null; // { taskId, items: string[], bytes, recovering, timer }
+
+function beginRestartQueue(taskId) {
+  if (restartQueue && restartQueue.taskId === taskId) return;
+  dropRestartQueue();
+  restartQueue = { taskId, items: [], bytes: 0, recovering: false, timer: null };
+  // If no new stream ever opens (kick never produced an exit, recovery
+  // never ran) don't hold input forever: try to deliver it, else tell the user.
+  restartQueue.timer = setTimeout(() => flushRestartQueue(), RESTART_QUEUE_WATCHDOG_MS);
+}
+
+function enqueueRestartInput(data) {
+  const q = restartQueue;
+  if (q.bytes + data.length > RESTART_QUEUE_MAX_BYTES) {
+    showToast('Agent restarting — input too large to queue');
+    return { ok: false, queued: false };
+  }
+  q.items.push(data);
+  q.bytes += data.length;
+  showTermStatus('rerendering\u2026 input queued', 'reconnecting');
+  return { ok: true, queued: true };
+}
+
+function dropRestartQueue() {
+  if (!restartQueue) return;
+  if (restartQueue.timer) clearTimeout(restartQueue.timer);
+  restartQueue = null;
+}
+
+// Sends queued input to the (now live) session. Raw fetch, NOT postInputBytes:
+// the history was already recorded when the bytes were queued, and the queue
+// is cleared first so this can't re-enqueue itself.
+async function flushRestartQueue() {
+  const q = restartQueue;
+  if (!q) return;
+  dropRestartQueue();
+  for (let i = 0; i < q.items.length; i++) {
+    if (!currentTask || currentTask.id !== q.taskId) return;
+    if (i > 0) await new Promise(res => setTimeout(res, COMPOSE_CR_DELAY_MS));
+    try {
+      const r = await fetch(API + `/api/tasks/${q.taskId}/input`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'text/plain' },
+        body: q.items[i],
+      });
+      if (!r.ok) { showToast('Queued input was not delivered'); return; }
+    } catch {
+      showToast('Queued input was not delivered');
+      return;
+    }
+  }
 }
 
 // --- Input history capture ---
@@ -3284,6 +3352,7 @@ function fit() {
     }).then(r => r.ok ? r.json() : null).then(j => {
       if (j && j.rerendered && currentTask && currentTask.id === taskId) {
         setExpectingRerender(true);
+        beginRestartQueue(taskId);
       }
     }).catch(() => {});
   }
@@ -3303,7 +3372,14 @@ function openStream(id, since) {
   }
   const es = new EventSource(url);
   evtSource = es;
-  es.onopen = () => showTermStatus('live', 'live');
+  es.onopen = () => {
+    showTermStatus('live', 'live');
+    // Only the stream opened by rerender recovery may flush; an earlier
+    // stream (re)opening against the dying session must not.
+    if (restartQueue && restartQueue.taskId === id && restartQueue.recovering) {
+      flushRestartQueue();
+    }
+  };
   es.onmessage = (e) => {
     if (!term) return;
     try {
@@ -3333,6 +3409,7 @@ function openStream(id, since) {
     }
     if (rerendering || expectingRerender) {
       setExpectingRerender(false);
+      beginRestartQueue(id);
       pollAndRecoverFromRerenderExit(id);
     } else {
       showTermStatus('session ended', 'error');
@@ -3352,6 +3429,13 @@ function openStream(id, since) {
   });
   es.onerror = () => {
     if (es.readyState === EventSource.CLOSED) {
+      // The stream 404s when it was opened inside the restart gap (the
+      // resize kick can land before openStream). EventSource won't retry an
+      // HTTP error, so run the same recovery the exit event would.
+      if (restartQueue && restartQueue.taskId === id && !restartQueue.recovering) {
+        pollAndRecoverFromRerenderExit(id);
+        return;
+      }
       showTermStatus('disconnected', 'error');
     } else {
       showTermStatus('reconnecting\u2026', 'reconnecting');
@@ -3376,12 +3460,16 @@ function closeStream() {
 // (typical 1-3s, sometimes longer on cold sandbox) much better than a fixed
 // timeout. If the user navigated away in the meantime, no-op.
 async function pollAndRecoverFromRerenderExit(id) {
-  if (!currentTask || currentTask.id !== id) return;
+  if (!currentTask || currentTask.id !== id) { dropRestartQueue(); return; }
+  // The exit event and a 404'd stream can both fire for one restart.
+  if (restartQueue && restartQueue.taskId === id && restartQueue.recovering) return;
+  beginRestartQueue(id);
+  restartQueue.recovering = true;
   showTermStatus('rerendering…', 'reconnecting');
   const start = Date.now();
   const deadline = start + 15000; // 15s upper bound — covers cold-start sandboxed Claude/Codex
   while (Date.now() < deadline) {
-    if (!currentTask || currentTask.id !== id) return; // user moved on
+    if (!currentTask || currentTask.id !== id) { dropRestartQueue(); return; } // user moved on
     try {
       const res = await fetch(API + `/api/tasks/${id}`, {
         headers: { 'Authorization': 'Bearer ' + TOKEN }
@@ -3406,6 +3494,10 @@ async function pollAndRecoverFromRerenderExit(id) {
       // Transient network error — fall through to retry.
     }
     await new Promise(r => setTimeout(r, 250));
+  }
+  if (restartQueue && restartQueue.taskId === id) {
+    dropRestartQueue();
+    showToast('Agent did not restart — queued input discarded');
   }
   showTermStatus('session ended', 'error');
 }
