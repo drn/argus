@@ -19,6 +19,7 @@ func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 	testutil.DeepEqual(t, names, []string{
 		"argus-archive",
 		"argus-complete",
+		"argus-handoff",
 		"argus-recycle",
 		"argus-resolve-model",
 		"argus-schedule",
@@ -145,6 +146,7 @@ func TestMaterializeBuiltinSkillsInto_WritesEmbeddedSet(t *testing.T) {
 	testutil.DeepEqual(t, names, []string{
 		"argus-archive",
 		"argus-complete",
+		"argus-handoff",
 		"argus-recycle",
 		"argus-resolve-model",
 		"argus-schedule",

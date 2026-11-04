@@ -11,7 +11,7 @@ The system SHALL treat `internal/skills/builtin/<name>/SKILL.md` as the sole in-
 #### Scenario: Embedded set includes every shipped builtin
 
 - **WHEN** the embedded builtin skill set is enumerated
-- **THEN** it includes `argus-archive`, `argus-complete`, `argus-recycle`, `argus-resolve-model`, `argus-schedule`, `hera`, `hera-plan`, `hera-review`, `hera-review-test-adversary`, and `hera-spawn-review`
+- **THEN** it includes `argus-archive`, `argus-complete`, `argus-handoff`, `argus-recycle`, `argus-resolve-model`, `argus-schedule`, `hera`, `hera-plan`, `hera-review`, `hera-review-test-adversary`, and `hera-spawn-review`
 
 #### Scenario: Builtin has no repository-local mirror
 
