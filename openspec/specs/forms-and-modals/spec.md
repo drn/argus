@@ -326,17 +326,22 @@ The submitted task's model value SHALL be: an empty string when `default` is sel
 
 ### Requirement: Copy-choice modal
 
-The copy-choice modal SHALL present a list of clipboard targets for a task and report the user's selection. It SHALL always offer a **Name** choice, and SHALL offer a **Prompt** choice only when the task's prompt is non-empty. Up/Down (and `j`/`k`) SHALL move the selection cursor among the available choices; Enter SHALL confirm the highlighted choice; Esc or Ctrl+Q SHALL cancel without selecting. The modal SHALL expose its outcome (selected target, or canceled) for the caller to act on.
+The copy-choice modal SHALL present a list of clipboard targets for a task and report the user's selection. It SHALL always offer a **Name** choice and an **ID** choice, and SHALL offer a **Prompt** choice only when the task's prompt is non-empty. The choices SHALL be ordered Name, Prompt (when offered), ID. Up/Down (and `j`/`k`) SHALL move the selection cursor among the available choices; Enter SHALL confirm the highlighted choice; Esc or Ctrl+Q SHALL cancel without selecting. The modal SHALL expose its outcome (selected target, or canceled) for the caller to act on.
 
 #### Scenario: Prompt choice hidden when prompt is empty
 
 - **WHEN** the modal is built for a task whose prompt is empty
-- **THEN** only the Name choice is offered and it is the highlighted choice
+- **THEN** only the Name and ID choices are offered and Name is the highlighted choice
 
 #### Scenario: Selecting a choice reports it
 
 - **WHEN** the user highlights the Prompt choice and presses Enter
 - **THEN** the modal reports the Prompt choice as selected and not canceled
+
+#### Scenario: Selecting the ID choice reports it
+
+- **WHEN** the user highlights the ID choice and presses Enter
+- **THEN** the modal reports the ID choice as selected and not canceled
 
 #### Scenario: Cancel reports no selection
 
