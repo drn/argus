@@ -192,3 +192,24 @@ test.describe('key bar', () => {
     expect(posted).toBe(false);
   });
 });
+
+// A live session parked at a prompt reports idle:true but must still get the
+// compose bar + key bar; only a task with no session at all is non-interactive.
+test.describe('isInteractive', () => {
+  test('live idle session is interactive, sessionless idle is not', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
+    await page.goto('/');
+    await expect(page.locator('#main-app')).toBeVisible();
+    const got = await page.evaluate(() => {
+      const f = (window as any).isInteractive;
+      return [
+        f({ status: 'in_progress', idle: true, live: true }),
+        f({ status: 'in_progress', idle: true }),
+        f({ status: 'in_progress' }),
+        f({ status: 'complete', live: true }),
+        f(null),
+      ];
+    });
+    expect(got).toEqual([true, false, true, false, false]);
+  });
+});

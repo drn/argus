@@ -2261,10 +2261,11 @@ async function refresh() {
         // Capture wasIdle BEFORE `currentTask = fresh` below — the
         // idle-flip branch inside the menuChanged block needs the prior
         // value to detect the transition.
-        const wasIdle = effectiveStatus(currentTask) === 'idle';
+        const wasInteractive = isInteractive(currentTask);
         const menuChanged =
           fresh.status !== currentTask.status ||
           fresh.idle !== currentTask.idle ||
+          fresh.live !== currentTask.live ||
           fresh.archived !== currentTask.archived;
         currentTask = fresh;
         // Mirror openDetail()'s window.currentTask write so Playwright specs
@@ -2274,14 +2275,14 @@ async function refresh() {
           document.getElementById('detail-subtitle').textContent =
             `${fresh.project} · ${statusLabel(effectiveStatus(fresh))}${fresh.elapsed ? ' · ' + fresh.elapsed : ''}`;
           renderOverflowMenu();
-          // Idle → active flip while the detail view is open. The static
-          // log replay needs to be torn down and the live stream + compose
-          // bar mounted in its place. The reverse flip (active → idle) is
-          // intentionally not re-attached: the user may still be reading
-          // agent output and the keyboard suddenly disappearing
-          // mid-conversation would be jarring.
-          const isIdle = effectiveStatus(fresh) === 'idle';
-          if (wasIdle && !isIdle) {
+          // Non-interactive → interactive flip (no live session → session
+          // started) while the detail view is open. The static log replay
+          // needs to be torn down and the live stream + compose bar mounted
+          // in its place. The reverse flip is intentionally not re-attached:
+          // the user may still be reading agent output and the keyboard
+          // suddenly disappearing mid-conversation would be jarring. A live
+          // session going active↔idle is NOT a flip: it stays interactive.
+          if (!wasInteractive && isInteractive(fresh)) {
             attachTerminal(fresh);
             // resumeTask() awaits refresh() and would call attachTerminal a
             // second time; signal that this branch already handled it so it
@@ -2695,7 +2696,7 @@ async function attachTerminal(task) {
   document.getElementById('term-wrap').style.display = 'flex';
   setupTerm();
 
-  if (task.status === 'in_progress' && !task.idle) {
+  if (isInteractive(task)) {
     showTermStatus('connecting\u2026', 'reconnecting');
     document.getElementById('term-status').style.display = 'flex';
     setComposeVisible(true);
@@ -2738,6 +2739,15 @@ async function attachTerminal(task) {
 function isCtrlZ(ev) {
   return ev.ctrlKey && !ev.metaKey && !ev.altKey &&
     (ev.key === 'z' || ev.key === 'Z' || ev.keyCode === 90);
+}
+
+// isInteractive reports whether a task has a live PTY that accepts input.
+// `idle` alone is not enough: a session parked at a prompt reports idle:true
+// but is exactly when the user wants the compose bar and key bar. Falls back
+// to !idle for an older daemon that doesn't send `live`.
+function isInteractive(t) {
+  if (!t || t.status !== 'in_progress') return false;
+  return t.live === true || !t.idle;
 }
 
 function setupTerm() {
@@ -3033,7 +3043,7 @@ async function onUploadFilesPicked(e) {
     // A stopped/in_review/complete task has no live PTY — sendInputBytes
     // would silently no-op and the user would think "Uploaded N files"
     // implied the agent saw them. Tell the user to resume instead.
-    const agentRunning = currentTask?.status === 'in_progress' && !currentTask?.idle;
+    const agentRunning = isInteractive(currentTask);
     if (agentRunning) {
       // No newline — user can add a sentence like "summarize the screenshot"
       // before pressing Enter. Trailing space separates the paths from
@@ -3604,7 +3614,7 @@ function renderOverflowMenu() {
   // pending, in_review, complete). Toggle mode is the only menu item for
   // actively-running tasks. The two branches are mutually exclusive: an
   // active in_progress task gets Toggle mode; everything else gets Resume.
-  if (s === 'in_progress' && !currentTask.idle) {
+  if (isInteractive(currentTask)) {
     items.push({ id: 'btn-mode', label: 'Toggle mode', fn: () => sendInputBytes('\x1b[Z'), keepOpen: true });
   } else {
     items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });

@@ -192,13 +192,14 @@ func TestComputeRuntimeState(t *testing.T) {
 		running  bool
 		idle     bool
 		wantIdle bool
+		wantLive bool
 	}{
-		{"pending never idle", model.StatusPending, false, false, false},
-		{"in_review never idle", model.StatusInReview, false, false, false},
-		{"complete never idle", model.StatusComplete, false, false, false},
-		{"in_progress no session is idle", model.StatusInProgress, false, false, true},
-		{"in_progress active session not idle", model.StatusInProgress, true, false, false},
-		{"in_progress idle session is idle", model.StatusInProgress, true, true, true},
+		{"pending never idle", model.StatusPending, false, false, false, false},
+		{"in_review never idle", model.StatusInReview, false, false, false, false},
+		{"complete never idle", model.StatusComplete, false, false, false, false},
+		{"in_progress no session is idle", model.StatusInProgress, false, false, true, false},
+		{"in_progress active session not idle", model.StatusInProgress, true, false, false, true},
+		{"in_progress idle session is idle but live", model.StatusInProgress, true, true, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,7 +212,9 @@ func TestComputeRuntimeState(t *testing.T) {
 			if tc.idle {
 				idle["t1"] = true
 			}
-			testutil.Equal(t, computeRuntimeState(task, running, idle, map[string]bool{}).Idle, tc.wantIdle)
+			rt := computeRuntimeState(task, running, idle, map[string]bool{})
+			testutil.Equal(t, rt.Idle, tc.wantIdle)
+			testutil.Equal(t, rt.Live, tc.wantLive)
 		})
 	}
 }
