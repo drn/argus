@@ -31,8 +31,8 @@
 
 - [x] 5.1 Run relevant unit/smoke suites, `make test-cover`, and full `make pre-pr`; report ambient ARGUS_* profile-test contamination, signing workarounds, and advisory stdlib vulnerability results explicitly.
 - [x] 5.2 Archive this change into base specs on the same branch before merge, then run `openspec validate --all --strict` and inspect the final diff.
-- [ ] 5.3 Commit, push through iris only after `make pre-pr` passes, and open a PR against master through iris; do not merge. No attribution line is required (coordinator message 20934).
-- [ ] 5.4 Send the coordinator the PR link, setting key and Settings location, local versus CI-only checks, and deliberate exclusions.
+- [x] 5.3 Commit, push through iris only after `make pre-pr` passes, and open a PR against master through iris; do not merge. No attribution line is required (coordinator message 20934).
+- [x] 5.4 Prepare the coordinator handoff with the PR link, setting key and Settings location, local versus CI-only checks, and deliberate exclusions.
 
 ## Validation evidence
 
@@ -40,3 +40,4 @@
 - `make test-cover` passed with 89.0% filtered coverage. Full `make pre-pr` passed with `GOTOOLCHAIN=go1.26.10`, `GOFLAGS=-p=3`, and `CODEX_HOME`/`CODEX_SQLITE_HOME` unset; the unchanged coverage gate is 88%.
 - Repo-default Go 1.26.8 stops at 11 reachable stdlib vulnerability findings (advisory in CI); the repo toolchain was not changed. Inherited Codex directory variables caused the daemon recapture fixture to fail; it passed with those unset. One full attempt hit the unrelated supervisor-client socket-startup/cleanup flake, which passed isolated and in the reduced-concurrency full gate. No ARGUS profile-env or commit-signing failures occurred.
 - Strict OpenSpec validation passed for all 75 items after archival. Ubuntu execution remains CI-only; web/macOS assets and REST contracts were not changed.
+- Delivery: [PR #1101](https://github.com/drn/argus/pull/1101), targeting `master`, opened through Iris and left unmerged. Setting: `ui.project_first`, Settings → Appearance → Project first, default off. Worker spawn retains its existing flow; remote TUI, web, and macOS are named follow-ups.
