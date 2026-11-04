@@ -1478,7 +1478,8 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		return toolError(id, "prompt is required")
 	}
 	sandboxOverride := strings.TrimSpace(p.SandboxOverride)
-	if err := s.taskCreateSandboxOverride(sandboxOverride, p.CallerID, p.Cwd); err != nil {
+	sandboxCaller, err := s.taskCreateSandboxOverride(sandboxOverride, p.CallerID, p.Cwd)
+	if err != nil {
 		log.Printf("[mcp] task_create rejected: %v", err)
 		return toolError(id, err.Error())
 	}
@@ -1528,6 +1529,9 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		if existing != nil {
 			s.createMu.Unlock()
 			if p.Upsert {
+				if sandboxOverride != "" && existing.Sandboxed != (sandboxOverride == "enabled") {
+					return toolError(id, fmt.Sprintf("existing task %s has sandboxed=%v, which conflicts with sandbox_override=%q (upsert does not change it)", existing.ID, existing.Sandboxed, sandboxOverride))
+				}
 				log.Printf("[mcp] task_create upsert hit: id=%s name=%q project=%q", existing.ID, name, p.Project)
 				return toolResult(id, formatTaskCreatedSummary(existing, "Task already exists (upsert)"))
 			}
@@ -1546,7 +1550,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		s.createMu.Unlock()
 	}()
 
-	log.Printf("[mcp] task_create name=%q project=%q auto=%v base=%q", name, p.Project, autoName, p.BaseBranch)
+	log.Printf("[mcp] task_create name=%q project=%q auto=%v base=%q sandbox_override=%q sandbox_caller=%q", name, p.Project, autoName, p.BaseBranch, sandboxOverride, sandboxCaller)
 	task, err := s.createTask(TaskCreateInput{
 		Name:             name,
 		Prompt:           p.Prompt,
@@ -1567,28 +1571,32 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 	return toolResult(id, formatTaskCreatedSummary(task, "Task created"))
 }
 
-// taskCreateSandboxOverride validates task_create's sandbox_override. "disabled"
-// requires an identified, unsandboxed caller so a sandboxed agent cannot spawn
-// an unsandboxed one; an unidentifiable caller fails closed.
-func (s *Server) taskCreateSandboxOverride(override, callerID, cwd string) error {
-	switch override {
-	case "", "enabled":
-		return nil
-	case "disabled":
-	default:
-		return fmt.Errorf("sandbox_override %q is not one of \"\", \"enabled\", \"disabled\"", override)
+// taskCreateSandboxOverride validates task_create's sandbox_override and
+// returns the resolved caller's task ID when "disabled" required one. "disabled"
+// requires an identified, live, unsandboxed caller so a sandboxed agent cannot
+// spawn an unsandboxed one; unlike account inheritance, an unidentifiable
+// caller fails closed. The check keys off the creation-time Task.Sandboxed.
+func (s *Server) taskCreateSandboxOverride(override, callerID, cwd string) (string, error) {
+	if err := model.ValidateSandboxOverride(override); err != nil {
+		return "", err
+	}
+	if override != "disabled" {
+		return "", nil
 	}
 	if callerID == "" && cwd == "" {
-		return fmt.Errorf("sandbox_override \"disabled\" requires an identified calling task (pass caller_id or cwd)")
+		return "", fmt.Errorf("sandbox_override \"disabled\" requires an identified calling task (pass caller_id or cwd)")
 	}
 	caller, err := s.resolveTask(callerID, cwd)
 	if err != nil {
-		return fmt.Errorf("sandbox_override \"disabled\" requires an identified calling task: %w", err)
+		return "", fmt.Errorf("sandbox_override \"disabled\" requires an identified calling task: %w", err)
+	}
+	if caller.Archived {
+		return "", fmt.Errorf("sandbox_override \"disabled\" requires a live calling task; %s is archived", caller.ID)
 	}
 	if caller.Sandboxed {
-		return fmt.Errorf("sandbox_override \"disabled\" is not allowed from sandboxed task %s", caller.ID)
+		return "", fmt.Errorf("sandbox_override \"disabled\" is not allowed from sandboxed task %s", caller.ID)
 	}
-	return nil
+	return caller.ID, nil
 }
 
 // accountConfigSource is the optional Config() seam account validation uses;

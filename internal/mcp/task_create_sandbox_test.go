@@ -14,6 +14,9 @@ func sandboxCreateServer(t *testing.T) (*Server, *TaskCreateInput, *int) {
 	tdb := &mockTaskDB{tasks: []*model.Task{
 		{ID: "boxed1", Name: "boxed", Project: "myapp", Sandboxed: true, Worktree: "/tmp/worktrees/myapp/boxed"},
 		{ID: "open1", Name: "open", Project: "myapp", Worktree: "/tmp/worktrees/myapp/open"},
+		{ID: "gone1", Name: "gone", Project: "myapp", Archived: true, Worktree: "/tmp/worktrees/myapp/gone"},
+		{ID: "dupbox", Name: "dupbox", Project: "myapp", Sandboxed: true, Worktree: "/tmp/worktrees/myapp/dupbox"},
+		{ID: "dupopen", Name: "dupopen", Project: "myapp", Worktree: "/tmp/worktrees/myapp/dupopen"},
 	}}
 	got := &TaskCreateInput{}
 	calls := new(int)
@@ -42,7 +45,9 @@ func TestTaskCreate_SandboxOverride(t *testing.T) {
 		{name: "disabled from sandboxed cwd", args: `{"sandbox_override":"disabled","cwd":"/tmp/worktrees/myapp/boxed/sub"}`, wantErr: "not allowed from sandboxed task"},
 		{name: "disabled from unsandboxed caller_id", args: `{"sandbox_override":"disabled","caller_id":"open1"}`, wantOverride: "disabled"},
 		{name: "disabled from unsandboxed cwd", args: `{"sandbox_override":"disabled","cwd":"/tmp/worktrees/myapp/open"}`, wantOverride: "disabled"},
-		{name: "disabled with no caller", args: `{"sandbox_override":"disabled"}`, wantErr: "requires an identified calling task"},
+		{name: "disabled with no caller", args: `{"sandbox_override":"disabled"}`, wantErr: "pass caller_id or cwd"},
+		{name: "disabled from archived caller", args: `{"sandbox_override":"disabled","caller_id":"gone1"}`, wantErr: "requires a live calling task; gone1 is archived"},
+		{name: "caller_id wins over cwd", args: `{"sandbox_override":"disabled","caller_id":"boxed1","cwd":"/tmp/worktrees/myapp/open"}`, wantErr: "not allowed from sandboxed task boxed1"},
 		{name: "disabled with unresolvable caller", args: `{"sandbox_override":"disabled","cwd":"/nowhere"}`, wantErr: "requires an identified calling task"},
 		{name: "disabled with unknown caller_id", args: `{"sandbox_override":"disabled","caller_id":"ghost"}`, wantErr: "requires an identified calling task"},
 	} {
@@ -80,9 +85,39 @@ func TestTaskCreate_SchemaDocumentsSandboxOverride(t *testing.T) {
 		testutil.Equal(t, prop["type"], "string")
 		_, hasEnum := prop["enum"]
 		testutil.True(t, !hasEnum)
-		testutil.Contains(t, prop["description"].(string), "rejected")
+		testutil.Contains(t, prop["description"].(string), "disabled")
 		testutil.Contains(t, def.Description, "sandbox_override")
 		return
 	}
 	t.Fatal("task_create not found")
+}
+
+func TestTaskCreate_SandboxOverrideUpsert(t *testing.T) {
+	for _, tc := range []struct {
+		name, taskName, override string
+		wantErr                  bool
+	}{
+		{name: "matching enabled", taskName: "dupbox", override: "enabled"},
+		{name: "no override accepts any", taskName: "dupbox", override: ""},
+		{name: "enabled on unsandboxed conflicts", taskName: "dupopen", override: "enabled", wantErr: true},
+		{name: "disabled on sandboxed conflicts", taskName: "dupbox", override: "disabled", wantErr: true},
+		{name: "matching disabled", taskName: "dupopen", override: "disabled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, calls := sandboxCreateServer(t)
+			args := map[string]any{"prompt": "do it", "project": "myapp", "name": tc.taskName, "upsert": true, "caller_id": "open1"}
+			if tc.override != "" {
+				args["sandbox_override"] = tc.override
+			}
+			raw, _ := json.Marshal(args)
+			resp := doRequest(t, s, "tools/call", ToolCallParams{Name: "task_create", Arguments: raw})
+			testutil.NoError(t, respErr(resp))
+			cr := callResult(t, resp)
+			testutil.Equal(t, cr.IsError, tc.wantErr)
+			testutil.Equal(t, *calls, 0)
+			if tc.wantErr {
+				testutil.Contains(t, cr.Content[0].Text, "conflicts with sandbox_override")
+			}
+		})
+	}
 }

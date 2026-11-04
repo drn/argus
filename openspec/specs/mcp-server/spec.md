@@ -389,6 +389,16 @@ is not sandboxed; `"enabled"` SHALL always be accepted.
 - **WHEN** `task_create` is called with `sandbox_override: "disabled"` and no resolvable caller
 - **THEN** it returns a tool error and creates no task
 
+#### Scenario: Disabled from an archived caller
+- **WHEN** `task_create` is called with `sandbox_override: "disabled"` by an archived task
+- **THEN** it returns a tool error and creates no task
+
+#### Scenario: Upsert conflicting with the requested override
+- **WHEN** `task_create` is called with `upsert: true` and a `sandbox_override` that conflicts with the existing task's sandboxed state
+- **THEN** it returns a tool error instead of the existing task
+
+Identity is self-reported (`caller_id`/`cwd`), so the `"disabled"` guard prevents accidental escalation but is not a security boundary.
+
 ### Requirement: Read-only daemon API tool
 
 The server SHALL expose an `argus_api_get` tool when the daemon has wired the REST API into the MCP server. The tool SHALL accept a single `path` argument and perform a GET against the daemon's REST API in-process through the same router and handlers that serve HTTP clients. It SHALL NOT accept a method argument and SHALL NOT dispatch any route that is not registered as a `GET /api/...` route. Streaming routes SHALL be refused. The caller SHALL be treated as a non-master authenticated principal, so master-only handlers refuse. A 2xx response SHALL return the response body as the tool result; any other status SHALL be a tool error carrying the status and body. The tool SHALL NOT read, send, or return the API token, and any occurrence of the master token in a response body SHALL be redacted. The tool description SHALL list the commonly useful routes.

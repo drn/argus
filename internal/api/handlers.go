@@ -319,12 +319,7 @@ func (s *Server) validateAccount(name, backend string) error {
 // for anything else, so a malformed value is rejected at the API boundary
 // instead of silently resolving as "inherit".
 func validateSandboxOverride(v string) error {
-	switch v {
-	case "", "enabled", "disabled":
-		return nil
-	default:
-		return fmt.Errorf("sandbox_override %q is not one of \"\", \"enabled\", \"disabled\"", v)
-	}
+	return model.ValidateSandboxOverride(v)
 }
 
 type createTaskReq struct {

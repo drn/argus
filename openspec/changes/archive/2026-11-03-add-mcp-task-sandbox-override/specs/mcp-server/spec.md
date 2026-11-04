@@ -32,3 +32,13 @@ is not sandboxed; `"enabled"` SHALL always be accepted.
 #### Scenario: Disabled with unidentified caller
 - **WHEN** `task_create` is called with `sandbox_override: "disabled"` and no resolvable caller
 - **THEN** it returns a tool error and creates no task
+
+#### Scenario: Disabled from an archived caller
+- **WHEN** `task_create` is called with `sandbox_override: "disabled"` by an archived task
+- **THEN** it returns a tool error and creates no task
+
+#### Scenario: Upsert conflicting with the requested override
+- **WHEN** `task_create` is called with `upsert: true` and a `sandbox_override` that conflicts with the existing task's sandboxed state
+- **THEN** it returns a tool error instead of the existing task
+
+Identity is self-reported (`caller_id`/`cwd`), so the `"disabled"` guard prevents accidental escalation but is not a security boundary.
