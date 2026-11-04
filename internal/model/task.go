@@ -148,3 +148,14 @@ func (t *Task) SetStatus(s Status) {
 		t.EndedAt = now
 	}
 }
+
+// ValidateSandboxOverride accepts the three tri-state per-task sandbox override
+// values ("" inherit, "enabled", "disabled") and rejects anything else.
+func ValidateSandboxOverride(v string) error {
+	switch v {
+	case "", "enabled", "disabled":
+		return nil
+	default:
+		return fmt.Errorf("sandbox_override %q is not one of \"\", \"enabled\", \"disabled\"", v)
+	}
+}

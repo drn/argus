@@ -356,6 +356,49 @@ The system SHALL expose a `task_recycle` tool, gated on both task management (`t
 - **WHEN** a routed task on `personal` calls `task_create` with its `caller_id` and no `account`
 - **THEN** the new task's account comes from routing and it is marked routed
 
+### Requirement: task_create sandbox override
+
+`task_create` SHALL accept an optional `sandbox_override` of `"enabled"` or
+`"disabled"` (empty or omitted means inherit) and pass it through to task
+creation so it is persisted as the task's sandbox override. Any other value
+SHALL be rejected with a tool error before a task is created. `"disabled"` SHALL
+be rejected unless the calling task is identified (via `caller_id` or `cwd`) and
+is not sandboxed; `"enabled"` SHALL always be accepted.
+
+#### Scenario: Force-enable sandbox
+- **WHEN** `task_create` is called with `sandbox_override: "enabled"`
+- **THEN** the created task carries `SandboxOverride == "enabled"`
+
+#### Scenario: Omitted inherits
+- **WHEN** `task_create` is called without `sandbox_override`
+- **THEN** the created task carries an empty override
+
+#### Scenario: Invalid value
+- **WHEN** `task_create` is called with `sandbox_override: "maybe"`
+- **THEN** it returns a tool error and creates no task
+
+#### Scenario: Disabled from a sandboxed caller
+- **WHEN** `task_create` is called with `sandbox_override: "disabled"` by a sandboxed task
+- **THEN** it returns a tool error and creates no task
+
+#### Scenario: Disabled from an unsandboxed caller
+- **WHEN** `task_create` is called with `sandbox_override: "disabled"` by an identified unsandboxed task
+- **THEN** the created task carries `SandboxOverride == "disabled"`
+
+#### Scenario: Disabled with unidentified caller
+- **WHEN** `task_create` is called with `sandbox_override: "disabled"` and no resolvable caller
+- **THEN** it returns a tool error and creates no task
+
+#### Scenario: Disabled from an archived caller
+- **WHEN** `task_create` is called with `sandbox_override: "disabled"` by an archived task
+- **THEN** it returns a tool error and creates no task
+
+#### Scenario: Upsert conflicting with the requested override
+- **WHEN** `task_create` is called with `upsert: true` and a `sandbox_override` that conflicts with the existing task's sandboxed state
+- **THEN** it returns a tool error instead of the existing task
+
+Identity is self-reported (`caller_id`/`cwd`), so the `"disabled"` guard prevents accidental escalation but is not a security boundary.
+
 ### Requirement: Read-only daemon API tool
 
 The server SHALL expose an `argus_api_get` tool when the daemon has wired the REST API into the MCP server. The tool SHALL accept a single `path` argument and perform a GET against the daemon's REST API in-process through the same router and handlers that serve HTTP clients. It SHALL NOT accept a method argument and SHALL NOT dispatch any route that is not registered as a `GET /api/...` route. Streaming routes SHALL be refused. The caller SHALL be treated as a non-master authenticated principal, so master-only handlers refuse. A 2xx response SHALL return the response body as the tool result; any other status SHALL be a tool error carrying the status and body. The tool SHALL NOT read, send, or return the API token, and any occurrence of the master token in a response body SHALL be redacted. The tool description SHALL list the commonly useful routes.
