@@ -2258,8 +2258,8 @@ async function refresh() {
     if (currentTask) {
       const fresh = tasks.find(t => t.id === currentTask.id);
       if (fresh) {
-        // Capture wasIdle BEFORE `currentTask = fresh` below — the
-        // idle-flip branch inside the menuChanged block needs the prior
+        // Capture wasInteractive BEFORE `currentTask = fresh` below — the
+        // re-attach branch inside the menuChanged block needs the prior
         // value to detect the transition.
         const wasInteractive = isInteractive(currentTask);
         const menuChanged =
@@ -2718,10 +2718,11 @@ async function attachTerminal(task) {
     // user always gets *something* without a stuck "connecting…" state.
     openStream(task.id, result.since);
   } else {
-    // Non-active: idle in_progress (agent waiting at a prompt or ghost
-    // session) or truly stopped (pending / in_review / complete). Both
-    // paths just replay the on-disk log into xterm. We don't pop the
-    // compose bar — input would silently vanish into a dead/idle PTY —
+    // Non-interactive: in_progress with no live session (ghost) or truly
+    // stopped (pending / in_review / complete). Both paths just replay the
+    // on-disk log into xterm. A live session parked at a prompt is NOT here
+    // (see isInteractive). We don't pop the compose bar — input would
+    // silently vanish into a dead PTY —
     // and we no longer auto-pop the resume modal either; Resume lives in
     // the overflow menu when applicable, which is enough recovery surface
     // and avoids a jarring modal every time the user enters the view.
@@ -3050,11 +3051,6 @@ async function onUploadFilesPicked(e) {
       // whatever the user types next.
       sendInputBytes(paths.join(' ') + ' ');
       showToast(`Uploaded ${paths.length} file${paths.length === 1 ? '' : 's'}`);
-    } else if (currentTask?.status === 'in_progress') {
-      // Idle: send paths so the agent picks them up on its next prompt
-      // turn but warn the user the agent is currently waiting.
-      sendInputBytes(paths.join(' ') + ' ');
-      showToast(`Uploaded ${paths.length} (agent idle — type to send)`);
     } else {
       showToast(`Saved ${paths.length} file${paths.length === 1 ? '' : 's'} (resume task to use)`);
     }
@@ -3610,10 +3606,10 @@ function renderOverflowMenu() {
   // operations belong in the closing-menu items below.
   // Esc lives in the key bar (⌨ button below the terminal); duplicating it
   // here just bloated the menu.
-  // Resume is the only menu item for non-active states (idle in_progress,
-  // pending, in_review, complete). Toggle mode is the only menu item for
-  // actively-running tasks. The two branches are mutually exclusive: an
-  // active in_progress task gets Toggle mode; everything else gets Resume.
+  // Resume is the only menu item for non-interactive states (in_progress
+  // with no live session, pending, in_review, complete). Toggle mode is the
+  // only menu item for tasks with a live session, active or idle. The two
+  // branches are mutually exclusive.
   if (isInteractive(currentTask)) {
     items.push({ id: 'btn-mode', label: 'Toggle mode', fn: () => sendInputBytes('\x1b[Z'), keepOpen: true });
   } else {
@@ -3837,8 +3833,8 @@ function setActionButtons(disabled) {
   });
 }
 
-// Coordinates resumeTask() and the refresh() idle-flip handler. When the
-// poll detects wasIdle && !isIdle and re-attaches the terminal, it sets
+// Coordinates resumeTask() and the refresh() re-attach handler. When the
+// poll detects a non-interactive → interactive flip and re-attaches, it sets
 // this flag so the awaiting resumeTask() skips its own attachTerminal
 // call \u2014 re-running it would tear down the freshly-opened SSE stream.
 // Reset on every resumeTask entry; the flag has no meaning outside that
@@ -3853,10 +3849,11 @@ async function resumeTask() {
     const r = await api(`/api/tasks/${currentTask.id}/resume`, { method: 'POST' });
     if (!r.ok) { const d = await r.json(); throw new Error(d.error || 'resume failed'); }
     // refresh() syncs currentTask + subtitle + overflow menu inline when a
-    // watched field flips. For an idle \u2192 active flip the refresh handler
-    // already calls attachTerminal and sets resumeReattachHandled; non-idle
-    // resume paths (pending / in_review / complete \u2192 in_progress) don't
-    // hit that branch, so we fall through to attach here.
+    // watched field flips. For a non-interactive \u2192 interactive flip the
+    // refresh handler already calls attachTerminal and sets
+    // resumeReattachHandled; other resume paths (pending / in_review /
+    // complete \u2192 in_progress) don't hit that branch, so we fall
+    // through to attach here.
     await refresh();
     if (!resumeReattachHandled) attachTerminal(currentTask);
   } catch(e) {

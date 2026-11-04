@@ -219,6 +219,21 @@ func TestComputeRuntimeState(t *testing.T) {
 	}
 }
 
+func TestTaskToJSON_LiveWireField(t *testing.T) {
+	task := &model.Task{ID: "t1", Status: model.StatusInProgress}
+	for _, tc := range []struct {
+		name string
+		live bool
+		want bool
+	}{{"live emitted", true, true}, {"not live omitted", false, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(taskToJSON(task, taskRuntimeState{Idle: true, Live: tc.live}))
+			testutil.NoError(t, err)
+			testutil.Equal(t, strings.Contains(string(b), `"live":true`), tc.want)
+		})
+	}
+}
+
 func TestHandleCreateTask(t *testing.T) {
 	srv, _ := testServer(t)
 	mux := srv.routes()
