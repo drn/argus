@@ -96,6 +96,11 @@ type taskJSON struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Idle   bool   `json:"idle,omitempty"`
+	// Live is true when Status == in_progress and the runner holds a session
+	// for the task, including one parked idle at a prompt. Idle alone also
+	// covers "no session at all", so clients use Live to decide whether input
+	// can reach a PTY.
+	Live bool `json:"live,omitempty"`
 	// NeedsInput is a runtime-derived flag, true only when Status ==
 	// in_progress and the daemon's watcher detected the agent is blocked
 	// waiting on the user (the red ? in the TUI). omitempty drops the field
@@ -123,6 +128,7 @@ type taskJSON struct {
 // doesn't grow into a positional bool chain when more flags are added.
 type taskRuntimeState struct {
 	Idle       bool
+	Live       bool
 	NeedsInput bool
 	// PRState is the cached PR review state string ("awaiting-review", etc.)
 	// from task_meta namespace "pr". Empty / "none" maps to an omitted DTO
@@ -137,6 +143,7 @@ func taskToJSON(t *model.Task, rt taskRuntimeState) taskJSON {
 		Name:         t.Name,
 		Status:       t.Status.String(),
 		Idle:         rt.Idle,
+		Live:         rt.Live,
 		NeedsInput:   rt.NeedsInput,
 		Project:      t.Project,
 		Branch:       t.Branch,
@@ -171,6 +178,7 @@ func computeRuntimeState(t *model.Task, runningSet, idleSet, needsInputSet map[s
 	}
 	return taskRuntimeState{
 		Idle:       !runningSet[t.ID] || idleSet[t.ID],
+		Live:       runningSet[t.ID],
 		NeedsInput: needsInputSet[t.ID],
 	}
 }
