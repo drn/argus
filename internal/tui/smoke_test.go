@@ -541,6 +541,22 @@ func TestSmoke_CopyChoiceModal(t *testing.T) {
 		t.Fatal("clipboard writer never called for Prompt")
 	}
 
+	// Re-open and select ID (Down x2 then Enter).
+	readUI(t, app.tapp, func() { app.tasklist.OnCopy(task) })
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		app.handleCopyChoiceKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+		app.handleCopyChoiceKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+		app.handleCopyChoiceKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	})
+	select {
+	case s := <-wrote:
+		testutil.Equal(t, s, task.ID)
+	case <-time.After(time.Second):
+		t.Fatal("clipboard writer never called for ID")
+	}
+	syncUI(t, app.tapp)
+
 	// Re-open and cancel with Esc — no copy, focus returns to the list.
 	readUI(t, app.tapp, func() { app.tasklist.OnCopy(task) })
 	syncUI(t, app.tapp)
