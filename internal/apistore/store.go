@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/sandboxprop"
 	"github.com/drn/argus/internal/tui/settings"
 	"github.com/drn/argus/internal/tui/store"
 )
@@ -62,6 +63,9 @@ type Store struct {
 
 	configMu     sync.RWMutex
 	cachedConfig config.Config
+
+	proposalsMu     sync.RWMutex
+	cachedProposals []*db.SandboxProposal
 }
 
 // New returns a Store wrapping c. The first Config() call returns the zero
@@ -94,7 +98,48 @@ func (s *Store) RefreshConfig(ctx context.Context) (config.Config, error) {
 	s.configMu.Lock()
 	s.cachedConfig = cfg
 	s.configMu.Unlock()
+	s.refreshProposals(ctx)
 	return cfg, nil
+}
+
+// refreshProposals best-effort caches pending sandbox proposals so the
+// Settings view reads them without a network call on the UI thread.
+func (s *Store) refreshProposals(ctx context.Context) {
+	list, err := s.c.ListSandboxProposals(ctx, db.SandboxProposalPending)
+	if err != nil {
+		return
+	}
+	s.proposalsMu.Lock()
+	s.cachedProposals = list
+	s.proposalsMu.Unlock()
+}
+
+// ListSandboxProposals returns the cached pending proposals (refreshed with
+// the config); status is ignored beyond "pending" in remote mode.
+func (s *Store) ListSandboxProposals(string) ([]*db.SandboxProposal, error) {
+	s.proposalsMu.RLock()
+	defer s.proposalsMu.RUnlock()
+	return append([]*db.SandboxProposal(nil), s.cachedProposals...), nil
+}
+
+// ApproveSandboxProposal approves via the daemon (master token) then
+// refreshes the cached list and config.
+func (s *Store) ApproveSandboxProposal(id, scope string, paths []string) (*sandboxprop.ApproveResult, error) {
+	res, err := s.c.ApproveSandboxProposal(context.Background(), id, scope, paths)
+	if err == nil {
+		s.refreshProposals(context.Background())
+		_, _ = s.RefreshConfig(context.Background())
+	}
+	return res, err
+}
+
+// RejectSandboxProposal rejects via the daemon then refreshes the cache.
+func (s *Store) RejectSandboxProposal(id string) error {
+	err := s.c.RejectSandboxProposal(context.Background(), id)
+	if err == nil {
+		s.refreshProposals(context.Background())
+	}
+	return err
 }
 
 // cachedSnapshot returns the last cached config under RLock. It is the single

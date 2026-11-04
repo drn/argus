@@ -443,3 +443,60 @@ test.describe('host sleep warning', () => {
     await expect(page.locator('#host-sleep-warning')).toBeHidden();
   });
 });
+
+test.describe('sandbox write-path proposals', () => {
+  const proposal = {
+    id: 7, task_id: 'task-1', project: 'demo', status: 'pending',
+    entries: [
+      { path: '~/.cache/tool', reason: '<img src=x onerror=window.__xss=1>' },
+      { path: '~/.ssh', reason: 'deploy', warning: 'sensitive path' },
+    ],
+  };
+
+  async function open(page, approveStatus = 200) {
+    let pending = [proposal];
+    let approveBody: any = null;
+    await page.route('**/api/sandbox/proposals?status=pending', r =>
+      r.fulfill({ json: { proposals: pending } }));
+    await page.route('**/api/sandbox/proposals/7/approve', async r => {
+      approveBody = JSON.parse(r.request().postData() || '{}');
+      if (approveStatus !== 200) return r.fulfill({ status: approveStatus, json: { error: 'master token required' } });
+      pending = [];
+      r.fulfill({ json: { scope: 'project', applied: ['/home/x/.cache/tool'], already_granted: [], warnings: [], takes_effect: 'new_sessions' } });
+    });
+    await login(page);
+    await page.locator('.tab[data-tab="settings"]').click();
+    return () => approveBody;
+  }
+
+  test('lists proposal, escapes agent text, approves with edited paths', async ({ page }) => {
+    const body = await open(page);
+    await expect(page.locator('#sandbox-pending-badge')).toHaveText('1');
+    await expect(page.locator('.sbx-warn')).toContainText('sensitive path');
+    await expect(page.locator('.sbx-reason').first()).toContainText('<img src=x');
+    expect(await page.evaluate(() => (window as any).__xss)).toBeUndefined();
+    await page.locator('.sbx-entry button.danger').nth(1).click();
+    await page.locator('.sbx-card button.primary').click();
+    await expect(page.locator('#sbx-result')).toContainText('NEW sessions only');
+    expect(body()).toEqual({ scope: 'project', paths: ['~/.cache/tool'] });
+    await expect(page.locator('#sbx-proposals')).toContainText('No pending proposals');
+    await expect(page.locator('#sandbox-pending-badge')).toBeHidden();
+  });
+
+  test('403 says a master token is required', async ({ page }) => {
+    page.on('dialog', d => d.accept());
+    await open(page, 403);
+    await page.locator('.sbx-card button.primary').click();
+    await expect(page.locator('#sbx-result')).toContainText('master token is required');
+  });
+
+  test('flagged proposal needs confirmation; cancel sends nothing', async ({ page }) => {
+    let dialogMsg = '';
+    page.on('dialog', d => { dialogMsg = d.message(); d.dismiss(); });
+    const approveBody = await open(page);
+    await page.locator('.sbx-card button.primary').click();
+    expect(dialogMsg).toContain('FLAGGED');
+    expect(approveBody()).toBeNull();
+  });
+});
+

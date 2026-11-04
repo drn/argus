@@ -1,15 +1,24 @@
+import ArgusKit
 import SwiftUI
 
 /// The Settings scene (Cmd+,): a General tab (server URL + token overrides,
 /// notification/menu-bar toggles) and a System tab (daemon status + host
 /// metrics, see ``SystemView``).
 struct SettingsView: View {
+    @Environment(AppState.self) private var app
+
     var body: some View {
         TabView {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
             SystemView()
                 .tabItem { Label("System", systemImage: "cpu") }
+            SandboxProposalsView()
+                .tabItem {
+                    Label(app.sandboxPendingCount > 0
+                          ? "Sandbox (\(app.sandboxPendingCount))" : "Sandbox",
+                          systemImage: "lock.shield")
+                }
         }
         .frame(width: 460)
     }

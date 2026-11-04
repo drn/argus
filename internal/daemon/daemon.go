@@ -38,6 +38,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
+	"github.com/drn/argus/internal/sandboxprop"
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/usagebudget"
 
@@ -1483,6 +1484,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			return taskRecycler.Recycle(in.TaskID, in.HandoffNote)
 		})
 		mcpSrv.SetClipboard(d.clipboard)
+		mcpSrv.SetSandboxProposer(sandboxprop.Proposer{DB: d.db})
 		mcpSrv.SetScheduleManager(d.db, sch)
 		mcpSrv.SetMessageManager(d.db, runnerNudger{notifier: d.notifier})
 		// Gate on cfg.Hera.Enabled: when disabled, the native hera_* tools are
