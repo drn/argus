@@ -313,6 +313,27 @@ func (d *DB) createTables() error {
 	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_msg_in_reply_to ON task_messages(in_reply_to)`)               //nolint:errcheck
 	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_msg_from_created ON task_messages(from_task_id, created_at)`) //nolint:errcheck
 
+	// Agent-submitted sandbox write-path proposals. Rows only RECORD a request;
+	// nothing here changes sandbox config. Applying one is the human-only
+	// approve path (internal/api/sandbox_proposals.go).
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS sandbox_proposals (
+			id            TEXT PRIMARY KEY,
+			task_id       TEXT NOT NULL,
+			project       TEXT NOT NULL DEFAULT '',
+			entries       TEXT NOT NULL,
+			status        TEXT NOT NULL DEFAULT 'pending',
+			scope         TEXT NOT NULL DEFAULT '',
+			applied_paths TEXT NOT NULL DEFAULT '[]',
+			created_at    TEXT NOT NULL,
+			decided_at    TEXT NOT NULL DEFAULT '',
+			decided_by    TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		return fmt.Errorf("creating sandbox_proposals table: %w", err)
+	}
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_sbxprop_status ON sandbox_proposals(status, created_at)`) //nolint:errcheck
+
 	// Session artifacts: files an agent/skill produced (HTML reports, PDFs,
 	// rendered markdown, images) and registered for viewing in Argus Web. The
 	// bytes live at ~/.argus/artifacts/<task-id>/<filename>; this table is the

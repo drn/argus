@@ -802,6 +802,7 @@ Configuring a backend in Settings makes these tools appear on the very next `too
 | Tool                  | Description                                                                                                                                                                     |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `argus_clipboard_set` | Stage text for the user to copy with one tap (PWA Copy button) or one keypress (TUI `ctrl+y`). Params: `text` (required), `id` or `cwd`. Last-write-wins, 5-min TTL, 1 MiB max. |
+| `sandbox_propose_write_paths` | Ask the human to grant the task's project extra sandbox write paths. Params: `paths` (array of `{path, reason}`, ≤20, required), `id` or `cwd`. Records a PENDING proposal only — nothing applies until a human approves in the TUI (Settings > Sandbox), web Settings, or macOS Settings; applies to new sessions. No MCP tool can approve. |
 
 **Artifacts:**
 
@@ -826,7 +827,7 @@ Both are unconditional across every session kind (coordinator, worker, freelance
 
 All endpoints require auth — `Authorization: Bearer <token>` header or `?token=<token>` query param (the latter is required for `EventSource`/SSE because browsers cannot set headers on it). The token can be the master token from `~/.argus/api-token` or any non-revoked device token.
 
-Every authenticated token has the same permissions **except** a small master-only denylist: **backends CRUD** (command templates can run arbitrary code), **self-update** (`/api/source-path`, `/api/update`), and **token list/mint/revoke** (`/api/tokens`). Those endpoints return `403` for device tokens; everything else — tasks, projects, schedules, settings, messages, push — accepts any token. One extra carve-out lives inside `PUT /api/settings`: the **`sandbox` section is master-only** (it governs the host sandbox-exec boundary), while KB/API/UX-defaults are open.
+Every authenticated token has the same permissions **except** a small master-only denylist: **backends CRUD** (command templates can run arbitrary code), **self-update** (`/api/source-path`, `/api/update`), and **token list/mint/revoke** (`/api/tokens`). Those endpoints return `403` for device tokens; everything else — tasks, projects, schedules, settings, messages, push — accepts any token. Sandbox proposal approve/reject are also master-only. One extra carve-out lives inside `PUT /api/settings`: the **`sandbox` section is master-only** (it governs the host sandbox-exec boundary), while KB/API/UX-defaults are open.
 
 #### Tasks
 
@@ -963,6 +964,10 @@ Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`
 | ------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/settings`                  | Returns sandbox / KB / API / Bridge / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host).                              |
 | `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "bridge":{"enabled":true,"delivery":true,"band":true,"toasts":true}, "defaults":{...}}`. The `sandbox` section is **master token required**; other sections accept any token. |
+| `GET`  | `/api/sandbox/proposals`         | Agent-submitted sandbox write-path proposals (`?status=pending\|approved\|rejected`). Any token (readable by agents via `argus_api_get`).            |
+| `GET`  | `/api/sandbox/proposals/{id}`    | One proposal.                                                                                                                               |
+| `POST` | `/api/sandbox/proposals/{id}/approve` | **Master token required.** Body `{"scope":"project"\|"global","paths":[...optional edit]}`; appends to `extra_write`; responds `takes_effect:"new_sessions"`. 409 if already decided. |
+| `POST` | `/api/sandbox/proposals/{id}/reject`  | **Master token required.** No config change.                                                                                                |
 | `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                          |
 
 ### Plugin substrate

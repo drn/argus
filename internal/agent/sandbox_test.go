@@ -1257,3 +1257,28 @@ func TestValidateWritePath(t *testing.T) {
 		})
 	}
 }
+
+func TestSandboxPathWarning(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	for _, tc := range []struct {
+		path string
+		warn bool
+	}{
+		{"~/.gem", false},
+		{"~/Library/Developer/Xcode/DerivedData", false},
+		{"~/.ssh", true},
+		{"~/.aws/cache", true},
+		{"~/.config", true},
+		{"~/.config/gcloud", true},
+		{"~/Library", true},
+		{"~/Library/Keychains/", true},
+		{"/Users", true},
+		{home + "/.ssh/id", true},
+		{home + "/.gem", false},
+		{"/opt/tools", false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			testutil.Equal(t, SandboxPathWarning(tc.path) != "", tc.warn)
+		})
+	}
+}

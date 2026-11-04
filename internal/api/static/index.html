@@ -754,6 +754,16 @@ button:disabled { opacity: 0.5; cursor: default; }
   padding: 8px 0; border-bottom: 1px solid var(--border);
 }
 .settings-row:last-child { border-bottom: none; }
+.sbx-badge { background: var(--red); color: #fff; border-radius: 10px; padding: 0 7px; font-size: 11px; margin-left: 6px; text-transform: none; letter-spacing: 0; }
+.sbx-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-top: 10px; }
+.sbx-card .sbx-head { font-size: 13px; font-weight: 600; margin-bottom: 6px; word-break: break-all; }
+.sbx-entry { margin-bottom: 8px; }
+.sbx-entry .sbx-line { display: flex; gap: 6px; }
+.sbx-entry input { flex: 1; min-width: 0; }
+.sbx-reason { font-size: 11px; color: var(--text-dim); margin-top: 2px; word-break: break-word; }
+.sbx-warn { display: inline-block; font-size: 11px; font-weight: 600; background: #3a1b1b; color: #f06060; border: 1px solid var(--red); border-radius: 4px; padding: 1px 6px; margin-top: 3px; word-break: break-word; }
+.sbx-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.settings-row .sbx-line input, .sbx-actions select { font: inherit; }
 .settings-row .label { font-size: 14px; }
 .settings-row .meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 .settings-row .grow { flex: 1; min-width: 0; }
@@ -1224,7 +1234,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     </div>
 
     <div class="settings-section">
-      <h3>Sandbox</h3>
+      <h3>Sandbox <span class="sbx-badge" id="sandbox-pending-badge" hidden></span></h3>
       <div class="settings-row">
         <div class="grow">
           <div class="label">Sandbox agent processes</div>
@@ -1252,6 +1262,14 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="settings-row">
         <div class="meta" id="sandbox-paths-status"></div>
         <button class="primary" onclick="saveSandboxPaths()">Save paths</button>
+      </div>
+      <div class="settings-row" style="flex-direction: column; align-items: stretch">
+        <div>
+          <div class="label">Sandbox write-path proposals</div>
+          <div class="meta">Agents can propose extra write paths. Applies to NEW sessions only &mdash; restart affected tasks. Approving requires the master token.</div>
+        </div>
+        <div id="sbx-proposals"><div class="meta">Loading&hellip;</div></div>
+        <div class="meta" id="sbx-result"></div>
       </div>
     </div>
 
@@ -6117,6 +6135,7 @@ async function loadSettings() {
     refreshPushState(),
     loadSourcePath(),
     loadSettingsBlock(),
+    loadSandboxProposals(),
     loadProjectsBlock(),
     loadBackendsBlock(),
     loadSchedulesBlock(),
@@ -6356,6 +6375,151 @@ async function saveSandboxPaths() {
   const status = document.getElementById('sandbox-paths-status');
   status.textContent = 'Saved';
   setTimeout(() => { status.textContent = ''; }, 2000);
+}
+
+// --- Sandbox write-path proposals: agent-proposed paths, human approval (master token) ---
+// All agent-supplied strings (path/reason/warning/task_id/project) are untrusted:
+// built with textContent/value only, never innerHTML.
+let sbxProposals = [];
+const sbxDraft = {}; // id -> {scope, rows:[{path, reason, warning}]} — survives list refreshes
+
+function sbxEl(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+async function sbxErrMsg(r) {
+  let msg = 'HTTP ' + r.status;
+  try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (_) {}
+  if (r.status === 403) msg = 'A master token is required to approve or reject sandbox proposals.';
+  return msg;
+}
+
+async function loadSandboxProposals() {
+  const box = document.getElementById('sbx-proposals');
+  if (!box) return;
+  try {
+    const r = await api('/api/sandbox/proposals?status=pending');
+    if (!r.ok) throw new Error(await sbxErrMsg(r));
+    const j = await r.json();
+    sbxProposals = (j && j.proposals) || [];
+  } catch (e) {
+    sbxProposals = [];
+    box.replaceChildren(sbxEl('div', 'meta', 'Failed to load proposals: ' + e.message));
+    updateSandboxBadge();
+    return;
+  }
+  const live = new Set(sbxProposals.map(p => p.id));
+  Object.keys(sbxDraft).forEach(k => { if (!live.has(Number(k)) && !live.has(k)) delete sbxDraft[k]; });
+  renderSandboxProposals();
+}
+
+function updateSandboxBadge() {
+  const b = document.getElementById('sandbox-pending-badge');
+  if (!b) return;
+  b.hidden = sbxProposals.length === 0;
+  b.textContent = String(sbxProposals.length);
+}
+
+function sbxDraftFor(p) {
+  if (!sbxDraft[p.id]) {
+    sbxDraft[p.id] = {
+      scope: p.project ? 'project' : 'global',
+      rows: (p.entries || []).map(e => ({ path: e.path || '', reason: e.reason || '', warning: e.warning || '' })),
+    };
+  }
+  return sbxDraft[p.id];
+}
+
+function renderSandboxProposals() {
+  const box = document.getElementById('sbx-proposals');
+  updateSandboxBadge();
+  if (!sbxProposals.length) {
+    box.replaceChildren(sbxEl('div', 'meta', 'No pending proposals.'));
+    return;
+  }
+  box.replaceChildren(...sbxProposals.map(p => {
+    const d = sbxDraftFor(p);
+    const card = sbxEl('div', 'sbx-card');
+    card.dataset.proposalId = String(p.id);
+    card.appendChild(sbxEl('div', 'sbx-head', 'Task ' + (p.task_id || '?') + (p.project ? ' · ' + p.project : '')));
+    d.rows.forEach((row, i) => {
+      const ent = sbxEl('div', 'sbx-entry');
+      const line = sbxEl('div', 'sbx-line');
+      const inp = sbxEl('input', 'settings-input mono');
+      inp.type = 'text';
+      inp.value = row.path;
+      inp.setAttribute('aria-label', 'Proposed path');
+      inp.addEventListener('input', () => { row.path = inp.value; });
+      const rm = sbxEl('button', 'danger', 'Remove');
+      rm.addEventListener('click', () => { d.rows.splice(i, 1); renderSandboxProposals(); });
+      line.append(inp, rm);
+      ent.appendChild(line);
+      if (row.reason) ent.appendChild(sbxEl('div', 'sbx-reason', 'Reason: ' + row.reason));
+      if (row.warning) ent.appendChild(sbxEl('div', 'sbx-warn', '⚠ ' + row.warning));
+      card.appendChild(ent);
+    });
+    const add = sbxEl('button', '', '+ Add path');
+    add.addEventListener('click', () => { d.rows.push({ path: '', reason: '', warning: '' }); renderSandboxProposals(); });
+    card.appendChild(add);
+
+    const act = sbxEl('div', 'sbx-actions');
+    const sel = sbxEl('select', 'settings-input');
+    sel.setAttribute('aria-label', 'Scope');
+    [['project', 'Project' + (p.project ? ' (' + p.project + ')' : '')], ['global', 'Global']].forEach(([v, t]) => {
+      const o = sbxEl('option', '', t);
+      o.value = v;
+      if (v === 'project' && !p.project) o.disabled = true;
+      sel.appendChild(o);
+    });
+    sel.value = d.scope;
+    sel.addEventListener('change', () => { d.scope = sel.value; });
+    const ok = sbxEl('button', 'primary', 'Approve');
+    ok.addEventListener('click', () => decideSandboxProposal(p.id, 'approve', ok));
+    const no = sbxEl('button', 'danger', 'Reject');
+    no.addEventListener('click', () => decideSandboxProposal(p.id, 'reject', no));
+    act.append(sel, ok, no);
+    card.appendChild(act);
+    return card;
+  }));
+}
+
+async function decideSandboxProposal(id, action, btn) {
+  const out = document.getElementById('sbx-result');
+  const d = sbxDraft[id];
+  let body;
+  if (action === 'approve') {
+    const paths = d.rows.map(r => r.path.trim()).filter(Boolean);
+    if (!paths.length) { out.textContent = 'Add at least one path to approve (or reject the proposal).'; return; }
+    body = { scope: d.scope, paths };
+  }
+  const card = btn.closest('.sbx-card');
+  if (card) card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  out.textContent = '';
+  try {
+    const r = await api('/api/sandbox/proposals/' + encodeURIComponent(id) + '/' + action, {
+      method: 'POST', body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) throw new Error(await sbxErrMsg(r));
+    const j = await r.json();
+    if (action === 'approve') {
+      const parts = ['Approved (' + (j.scope || d.scope) + ' scope). Applies to NEW sessions only — restart affected tasks.'];
+      if ((j.applied || []).length) parts.push('Applied: ' + j.applied.join(', '));
+      if ((j.already_granted || []).length) parts.push('Already granted: ' + j.already_granted.join(', '));
+      if ((j.warnings || []).length) parts.push('Warnings: ' + j.warnings.join('; '));
+      out.textContent = parts.join('\n');
+      out.style.whiteSpace = 'pre-wrap';
+    } else {
+      out.textContent = 'Proposal rejected.';
+    }
+    delete sbxDraft[id];
+  } catch (e) {
+    out.textContent = (action === 'approve' ? 'Approve' : 'Reject') + ' failed: ' + e.message;
+    out.style.whiteSpace = 'pre-wrap';
+  }
+  await loadSandboxProposals();
 }
 
 function saveKBToggle(field, value) {

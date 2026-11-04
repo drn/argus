@@ -19,6 +19,7 @@ import (
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/sandboxprop"
 	"github.com/drn/argus/internal/todo"
 )
 
@@ -178,6 +179,13 @@ type ClipboardSetter interface {
 	Set(taskID, text string) error
 }
 
+// SandboxProposer records pending sandbox write-path proposals. It is
+// deliberately propose-only: nothing reachable through MCP can approve,
+// reject, or apply a proposal.
+type SandboxProposer interface {
+	Propose(task *model.Task, items []sandboxprop.Item) (*sandboxprop.ProposeResult, error)
+}
+
 // ScheduleStore provides read+write access to scheduled tasks. The signature
 // matches *db.DB so the daemon passes its DB handle directly.
 type ScheduleStore interface {
@@ -213,6 +221,7 @@ type Server struct {
 	taskStopper TaskStopper
 	taskRecycle TaskRecycler    // optional; set via SetTaskRecycler
 	clipboard   ClipboardSetter // optional; set via SetClipboard
+	sandboxProp SandboxProposer // optional; set via SetSandboxProposer
 	schedDB     ScheduleStore   // optional; set via SetScheduleManager
 	schedRunner ScheduleRunner  // optional; set via SetScheduleManager
 	messages    MessageStore    // optional; set via SetMessageManager
@@ -312,6 +321,12 @@ func (s *Server) SetTaskRecycler(recycler TaskRecycler) {
 // argus_clipboard_set tool.
 func (s *Server) SetClipboard(setter ClipboardSetter) {
 	s.clipboard = setter
+}
+
+// SetSandboxProposer enables the sandbox_propose_write_paths tool (requires
+// task management for cwd resolution).
+func (s *Server) SetSandboxProposer(p SandboxProposer) {
+	s.sandboxProp = p
 }
 
 // SetPluginRegistry wires the runtime plugin-tool registry (PR 4 of the
@@ -960,6 +975,39 @@ This does NOT write directly to the OS clipboard — it stages text the user can
 	},
 }
 
+var sandboxProposalToolDefs = []Tool{
+	{
+		Name: "sandbox_propose_write_paths",
+		Description: `Ask the human to grant this task's project extra sandbox WRITE access to directories you hit "Operation not permitted" on (e.g. ~/.gem, ~/.cocoapods, ~/Library/Developer/Xcode/DerivedData). This only records a PENDING proposal: nothing changes until the user manually approves it in the Argus TUI, web app or macOS app, and an approved path applies only to NEW sessions (the user must restart the task). You cannot approve, apply, or check off a proposal yourself; read GET /api/sandbox/proposals via argus_api_get for its status.
+
+Batch every path you need into one call, each with a short reason. Paths must be absolute or start with ~/ (no .., no trailing junk). Sensitive locations (credentials, ~/.ssh, ~/.aws, ...) are accepted but flagged with a warning for the approver, so only ask for what you truly need. Pass ` + "`id`" + ` or ` + "`cwd`" + ` to identify the task.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"paths": map[string]interface{}{
+					"type":        "array",
+					"description": "Up to 20 requested write paths.",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"path":   map[string]interface{}{"type": "string", "description": "Absolute or ~/ path."},
+							"reason": map[string]interface{}{"type": "string", "description": "Why the task needs it (max 500 chars)."},
+						},
+						"required": []string{"path"},
+					},
+				},
+				"id":  map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
+				"cwd": map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
+			},
+			"required": []string{"paths"},
+		},
+	},
+}
+
+func (s *Server) sandboxProposalEnabled() bool {
+	return s.sandboxProp != nil && s.taskMgmtEnabled()
+}
+
 // taskMgmtEnabled returns true when all task management dependencies are wired.
 func (s *Server) taskMgmtEnabled() bool {
 	return s.createTask != nil && s.taskDB != nil && s.taskStopper != nil
@@ -1063,6 +1111,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.clipboardEnabled() {
 		tools = append(tools, clipboardToolDefs...)
 	}
+	if s.sandboxProposalEnabled() {
+		tools = append(tools, sandboxProposalToolDefs...)
+	}
 	if s.taskRecycleEnabled() {
 		tools = append(tools, taskRecycleToolDefs...)
 	}
@@ -1159,6 +1210,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskRecycle(req.ID, params.Arguments)
 	case "argus_clipboard_set":
 		return s.toolClipboardSet(req.ID, params.Arguments)
+	case "sandbox_propose_write_paths":
+		return s.toolSandboxPropose(req.ID, params.Arguments)
 	case "schedule_list":
 		return s.toolScheduleList(req.ID, params.Arguments)
 	case "schedule_create":
@@ -2047,6 +2100,38 @@ func (s *Server) toolClipboardSet(id interface{}, args json.RawMessage) *Respons
 
 	log.Printf("[mcp] clipboard_set ok: id=%s bytes=%d", task.ID, len(p.Text))
 	return toolResult(id, fmt.Sprintf("Staged %d bytes for task %s (%s). The user will see a Copy button (PWA) or ctrl+y hint (TUI).", len(p.Text), task.ID, task.Name))
+}
+
+// toolSandboxPropose records a pending sandbox write-path proposal. It never
+// changes config; approval is a human-only REST/UI action.
+func (s *Server) toolSandboxPropose(id interface{}, args json.RawMessage) *Response {
+	if !s.sandboxProposalEnabled() {
+		return toolError(id, "sandbox proposals not configured")
+	}
+	var p struct {
+		Paths []sandboxprop.Item `json:"paths"`
+		ID    string             `json:"id"`
+		Cwd   string             `json:"cwd"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+	task, err := s.resolveTask(p.ID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	res, err := s.sandboxProp.Propose(task, p.Paths)
+	if err != nil {
+		log.Printf("[mcp] sandbox_propose_write_paths rejected: task=%s err=%v", task.ID, err)
+		return toolError(id, err.Error())
+	}
+	log.Printf("[mcp] sandbox_propose_write_paths ok: task=%s proposal=%s merged=%v", task.ID, res.Proposal.ID, res.Merged)
+	msg := fmt.Sprintf("Proposal %s is PENDING human approval (nothing has changed). Ask the user to approve it in Argus, then restart this task for the grant to apply. Check status via argus_api_get /api/sandbox/proposals/%s.", res.Proposal.ID, res.Proposal.ID)
+	if res.Merged {
+		msg = "An identical proposal was already pending. " + msg
+	}
+	if len(res.Warnings) > 0 {
+		msg += " Warnings shown to the approver: " + strings.Join(res.Warnings, "; ")
+	}
+	return toolResult(id, msg)
 }
 
 // --- todo tools ---
