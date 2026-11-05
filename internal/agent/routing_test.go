@@ -195,3 +195,37 @@ func TestResolveTaskChoiceUsesInstalledDaemonReadings(t *testing.T) {
 		})
 	}
 }
+
+// An explicit task/project backend resolves by name without touching the
+// usage source (hotfix: ResolveBackend runs per role per Hera refresh on the
+// UI goroutine). A blank backend still routes on readings.
+func TestResolveBackend_ExplicitBackendSkipsUsageReadings(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Backends = map[string]config.Backend{
+		"claude": {Command: "claude"}, "codex": {Command: "codex"},
+	}
+	cfg.Defaults.Backend = "claude"
+	cfg.Projects = map[string]config.Project{"p": {Backend: "codex"}}
+	cfg.BackendRouting.Strategy = config.StrategyHeadroom
+	cfg.BackendRouting.Tiers = []config.BackendTier{
+		{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 90},
+		{Backend: "codex", Probe: config.ProbeCodexUsage, ThresholdPct: 90},
+	}
+	reads := 0
+	t.Cleanup(backendtier.SetUsageSource(func() (backendtier.Usage, error) {
+		reads++
+		return backendtier.Usage{}, nil
+	}))
+
+	b, err := ResolveBackend(&model.Task{Backend: "claude", Project: "p"}, cfg)
+	testutil.NoError(t, err)
+	testutil.Equal(t, b.Command, "claude")
+	b, err = ResolveBackend(&model.Task{Project: "p"}, cfg)
+	testutil.NoError(t, err)
+	testutil.Equal(t, b.Command, "codex")
+	testutil.Equal(t, reads, 0)
+
+	_, err = ResolveBackend(&model.Task{}, cfg)
+	testutil.NoError(t, err)
+	testutil.Equal(t, reads, 1) // blank backend still routes on readings
+}

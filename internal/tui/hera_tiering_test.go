@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
@@ -172,4 +174,43 @@ func TestValidProfileNames_OnlyValid(t *testing.T) {
 	}
 	testutil.Equal(t, has("good"), true)
 	testutil.Equal(t, has("bad"), false)
+}
+
+// TestResolveHeraTier_NoBlockingRPCOnUIGoroutine pins the typing-freeze hotfix:
+// the per-tick role annotation resolves tiers through the installed usage
+// source, and that source (CachedUsage in production) must never run a daemon
+// RPC on the calling goroutine. A fetch that blocks forever must not stall N
+// annotations (the live bug: N roles × a 2s RPC deadline per tick).
+func TestResolveHeraTier_NoBlockingRPCOnUIGoroutine(t *testing.T) {
+	app := tierTestApp(t)
+	d := app.db.(*db.DB)
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir(), Profile: "lean"}))
+	// A loadable profile is required: without one resolveHeraTier returns before
+	// reaching ResolveBackend and the test would pass vacuously.
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\neffort = \"high\"\n")
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 90},
+	}))
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	cached := backendtier.NewCachedUsage(func() (backendtier.Usage, error) {
+		<-release
+		return backendtier.Usage{}, nil
+	}, time.Second, time.Minute)
+	t.Cleanup(backendtier.SetUsageSource(cached.Read))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			rv := &hera.RoleView{ArgusProject: "p", Archetype: "code_slice"}
+			app.resolveHeraTier(rv)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resolveHeraTier blocked on the usage source (RPC on the UI goroutine)")
+	}
 }

@@ -156,6 +156,19 @@ func resolveDefaultBackendName(explicit, project string, cfg config.Config, acco
 	if len(accounts) > 0 {
 		account = accounts[0]
 	}
+	// Short-circuit: ResolveChoice(cfg, backend, pin) with a non-empty backend
+	// only ever returns that backend (tiers for other backends are skipped; no
+	// match falls back to it), and readings only select the ACCOUNT, which this
+	// name-only path discards. Skipping it keeps display/lookup callers (Hera
+	// refresh, picker, Client.Start) from pulling usage readings per call.
+	// CreateAndStart keeps calling resolveTaskChoice because it uses the account.
+	backend := explicit
+	if backend == "" {
+		backend = cfg.Projects[project].Backend
+	}
+	if backend != "" {
+		return backend
+	}
 	return resolveTaskChoice(explicit, project, cfg, account).Backend
 }
 
