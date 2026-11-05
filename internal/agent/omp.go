@@ -143,12 +143,13 @@ func captureOmp(task *model.Task, _ config.Config) (string, error) {
 }
 
 // ompPermissionFlags maps Argus's permission modes onto omp's --approval-mode.
-// omp has no plan-without-model-switch mode, so plan modes ask before writes.
+// omp's own default is yolo, so Argus's prompting default asks explicitly; omp
+// has no plan-without-model-switch mode, so plan modes ask before writes too.
 func ompPermissionFlags(mode string) string {
 	switch mode {
 	case config.PermissionModeAcceptEdits:
 		return "--approval-mode write"
-	case config.PermissionModePlan, config.PermissionModeBypassAllow:
+	case config.PermissionModeDefault, config.PermissionModePlan, config.PermissionModeBypassAllow:
 		return "--approval-mode always-ask"
 	case config.PermissionModeBypassActive:
 		return "--approval-mode yolo"

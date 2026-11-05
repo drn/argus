@@ -434,6 +434,7 @@ struct ModelDecodeTests {
         #expect(NewTaskAccount.accounts([d, w, c], forBackend: "codex").map(\.name) == ["default", "cx"])
         #expect(NewTaskAccount.accounts([d, w, c], forBackend: "pi").map(\.name) == ["default"])
         #expect(NewTaskAccount.accounts([d, w, c], forBackend: "antigravity").map(\.name) == ["default"])
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "omp").map(\.name) == ["default"])
     }
 
     @Test("NewTaskAccount uses daemon-supplied backend kinds when known")

@@ -73,7 +73,8 @@ func TestBuildCmd_Omp(t *testing.T) {
 		{name: "accept edits", cfg: withMode(config.PermissionModeAcceptEdits), task: model.Task{Backend: "omp", Prompt: "p"}, want: "omp --approval-mode write -- 'p'"},
 		{name: "plan", cfg: withMode(config.PermissionModePlan), task: model.Task{Backend: "omp", Prompt: "p"}, want: "omp --approval-mode always-ask -- 'p'"},
 		{name: "bypass allow", cfg: withMode(config.PermissionModeBypassAllow), task: model.Task{Backend: "omp", Prompt: "p"}, want: "omp --approval-mode always-ask -- 'p'"},
-		{name: "default mode injects nothing", cfg: withMode(config.PermissionModeDefault), task: model.Task{Backend: "omp", Prompt: "p"}, want: "omp -- 'p'"},
+		{name: "default mode asks instead of omp's yolo default", cfg: withMode(config.PermissionModeDefault), task: model.Task{Backend: "omp", Prompt: "p"}, want: "omp --approval-mode always-ask -- 'p'"},
+		{name: "unknown mode injects nothing", cfg: withMode("bogus"), task: model.Task{Backend: "omp", Prompt: "p"}, want: "omp -- 'p'"},
 		{name: "hand-edited auto-approve wins", cfg: withCmd("omp --auto-approve"), task: model.Task{Backend: "omp", Prompt: "p"}, want: "omp --auto-approve -- 'p'"},
 		{name: "hand-edited approval mode wins", cfg: withCmd("omp --approval-mode=write"), task: model.Task{Backend: "omp", Prompt: "p"}, want: "omp --approval-mode=write -- 'p'"},
 	}

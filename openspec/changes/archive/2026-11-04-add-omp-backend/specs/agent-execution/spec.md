@@ -26,7 +26,7 @@ The system SHALL classify a backend whose first-word basename is `omp` as the `o
 
 ### Requirement: Oh My Pi permission modes
 
-The system SHALL map `defaults.permission_mode` for omp backends onto `--approval-mode`: bypass-active to `yolo`, accept-edits to `write`, plan and bypass-allow to `always-ask`, and default to nothing; it SHALL inject nothing when the command already contains `--approval-mode`, `--auto-approve`, or `--yolo`.
+The system SHALL map `defaults.permission_mode` for omp backends onto `--approval-mode`: bypass-active to `yolo`, accept-edits to `write`, default, plan and bypass-allow to `always-ask` (omp's own default is `yolo`), and any other value to nothing; it SHALL inject nothing when the command already contains `--approval-mode`, `--auto-approve`, or `--yolo`.
 
 #### Scenario: Accept-edits maps to write
 - **WHEN** the permission mode is accept-edits and the command has no permission flag

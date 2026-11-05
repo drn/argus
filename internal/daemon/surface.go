@@ -190,7 +190,8 @@ const (
 	//     backend-specific model. A stale supervisor serves the older guidance.
 	// 34: omp (Oh My Pi) backend family: capture-style sessions, per-launch
 	//     MCP via a generated --plugin-dir plugin, skills via a --config
-	//     overlay. A stale supervisor launches omp as a custom command.
+	//     overlay; Argus default permission asks (omp defaults to yolo). A stale
+	//     supervisor launches omp as a custom command.
 	SupervisorSpawnSurface = 34
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
@@ -427,6 +428,7 @@ var SupervisorSpawnPaths = []string{
 	"internal/agent/codexaccount.go",             // per-task Codex home, env hygiene, sandbox grant
 	"internal/config/accounts.go",                // account → config dir resolution BuildCmd reads
 	"internal/agent/nonclaude_context.go",        // OpenCode child-only skills config content
+	"internal/agent/omp.go",                      // omp MCP plugin + skills overlay materialization, permission flags
 	"internal/agent/prelaunch.go",                // backend prelaunch (pi/ollama) run before the fork
 	"internal/agent/routing_prompt.go",           // --append-system-prompt-file routing injection
 	"internal/agent/sandbox.go",                  // the sandbox-exec wrapper the command is wrapped in
@@ -482,7 +484,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "930ffa9af4ea8279a291f3520d8e414313cac780216d82a1cc5017894afb2e8e"
+	SpawnSurfaceDigest  = "7c78a1d8f47cb8880336fe719e19570836c54d6f6eb2adf3391afbcfe3f35924"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 
