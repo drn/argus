@@ -89,6 +89,12 @@ Merging it into `spinnerLoop` would be a smaller diff later, but would have to r
 
 ### 6. Timing log design
 
+**The log is off unless a measurement asks for it.** The TUI reads `ARGUS_TYPING_LOG=1` once at startup. When it isn't set, the tracker is nil, and each call site is a nil check. No timestamps are taken, no `[typing]`, `[tick]` or `[repaint]` lines are written, and no probe writer is attached for timing.
+
+The cost when it's on is several timestamps and one synchronous log write per keystroke, on the UI goroutine. That is small next to a repaint, but it does nothing useful outside a measurement. It also keeps the 20MB `ux.log` from filling with keystroke lines.
+
+An environment variable fits better than a config key, because this is a per-launch diagnostic with no user-facing behaviour, and it needs no daemon or Settings change. Code reads the flag once and passes the result in, so tests never depend on the process environment. The pump's own writer is separate and is always attached after the repaint commit, because it drives the repaint rather than the log.
+
 The tracker runs on the UI goroutine, apart from one atomic timestamp set by the output writer. All intervals are measured from these points:
 
 | Point | Where |
@@ -135,7 +141,7 @@ This procedure touches nothing shared. It runs a separate TUI binary against the
 1. **Timing commit.** The worker implements task groups 1 and 2 only. `make pre-pr` passes. The worker commits and pushes with `iris_push`.
 2. **Build.** The worker runs `go build -o <scratchpad>/argus-baseline ./cmd/argus` with an absolute path outside the repository. No `iris_set_dogfood`, `iris_publish` or daemon reload.
 3. **Hand off.** The worker sends `hera_send(status="blocked")` to the coordinator with the absolute binary path. The coordinator confirms timing with Aaron.
-4. **Relaunch by Aaron.** Aaron quits the running TUI, which leaves agents running because the daemon and supervisor own them, then runs the binary at the same terminal size.
+4. **Relaunch by Aaron.** Aaron quits the running TUI, which leaves agents running because the daemon and supervisor own them, then runs `ARGUS_TYPING_LOG=1 <path to binary>` at the same terminal size.
 5. **Skew modal.** The TUI's hash differs from the daemon's, so the blocking skew modal opens. **Aaron picks Skip or presses Esc.** Restart daemon would put this build on the shared daemon, and restart supervisor would interrupt every agent. A status bar notice afterwards is expected.
 6. **Check it's live.** After the first keystroke, `go run ./cmd/argus-latency report --last 1m` shows a sample.
 
@@ -156,7 +162,7 @@ If the sandbox can't reach port 6061, the worker asks the coordinator to have Aa
 
 13. **Report.** The worker runs `go run ./cmd/argus-latency report --since <start> --until <end>` straight away, because `ux.log` rotates at 20MB.
 14. **Record.** The tables, `uptime`, task count, stall output and CPU figures go into `openspec/changes/repaint-panes-on-output/measurements.md` under a "Before" heading, and get committed.
-15. **Back to normal.** Aaron can return to the normal `argus` binary at any point.
+15. **Back to normal.** Aaron can return to the normal `argus` binary at any point, which also turns the timing log off.
 
 ### After capture
 
@@ -206,7 +212,7 @@ The only process that needs the new code is the TUI, so only a relaunch is neede
 
 ## Migration plan
 
-Merging and a relaunch are the whole rollout, and deployment goes through the coordinator. To roll back, revert the repaint commit. The timing log can stay on its own.
+Merging and a relaunch are the whole rollout, and deployment goes through the coordinator. To roll back, revert the repaint commit. The timing log can stay on its own, and stays off unless a launch asks for it.
 
 ## Open questions
 

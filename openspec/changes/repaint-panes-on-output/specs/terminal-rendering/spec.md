@@ -46,26 +46,31 @@ The TUI SHALL repaint when output arrives for a session shown in a terminal pane
 
 ### Requirement: Keystroke-to-paint latency is logged
 
-The TUI SHALL write one `uxlog` line prefixed `[typing]` for each key forwarded to an agent from the Tasks agent view or a Hera pane, reporting the total time from the key press to the frame containing its echo being flushed, and the parts of that time: waiting to be handled, waiting for output, waiting for paint, and time spent inside a tick closure. The first output after the key SHALL be treated as its echo. The line SHALL also report the time since the session's last prior output and whether another key was still awaiting its echo. The line SHALL NOT contain key content or length.
+The timing log SHALL be off by default and SHALL be enabled only for a TUI launched with `ARGUS_TYPING_LOG=1`. When it is off, the TUI SHALL NOT take latency timestamps or write latency log lines. When it is on, the TUI SHALL write one `uxlog` line prefixed `[typing]` for each key forwarded to an agent from the Tasks agent view or a Hera pane, reporting the total time from the key press to the frame containing its echo being flushed, and the parts of that time: waiting to be handled, waiting for output, waiting for paint, and time spent inside a tick closure. The first output after the key SHALL be treated as its echo. The line SHALL also report the time since the session's last prior output and whether another key was still awaiting its echo. The line SHALL NOT contain key content or length.
+
+#### Scenario: The log is off by default
+
+- **WHEN** the TUI is launched without `ARGUS_TYPING_LOG=1` and keys are forwarded to an agent
+- **THEN** no `[typing]`, `[tick]` or `[repaint]` line is written and no latency timestamps are taken
 
 #### Scenario: An echoed key logs its latency
 
-- **WHEN** a key is forwarded to a live session and output follows and is painted
+- **WHEN** the timing log is on, a key is forwarded to a live session, and output follows and is painted
 - **THEN** one `[typing]` line is logged with the task, the pane, the total time and each part
 
 #### Scenario: Time behind a stalled UI goroutine is counted
 
-- **WHEN** a key is pressed while a tick closure is running on the UI goroutine
+- **WHEN** the timing log is on and a key is pressed while a tick closure is running on the UI goroutine
 - **THEN** the wait is included in the total, in the time waiting to be handled, and in the time spent inside a tick closure
 
 #### Scenario: A key with no echo is not paired with later output
 
-- **WHEN** a forwarded key produces no output within 2 seconds
+- **WHEN** the timing log is on and a forwarded key produces no output within 2 seconds
 - **THEN** a `[typing]` line is logged with `outcome=no-echo`, and later output is not attributed to it
 
 #### Scenario: Overlapping keys are marked
 
-- **WHEN** a key is forwarded while an earlier key is still waiting for its echo
+- **WHEN** the timing log is on and a key is forwarded while an earlier key is still waiting for its echo
 - **THEN** its line is marked `overlap=1`
 
 #### Scenario: Key content is never logged
@@ -75,14 +80,14 @@ The TUI SHALL write one `uxlog` line prefixed `[typing]` for each key forwarded 
 
 ### Requirement: Slow tick closures are logged
 
-The TUI SHALL write a `uxlog` line prefixed `[tick]` with the duration of any tick closure on the UI goroutine that takes 16ms or longer, and SHALL NOT log faster ticks.
+While the timing log is on, the TUI SHALL write a `uxlog` line prefixed `[tick]` with the duration of any tick closure on the UI goroutine that takes 16ms or longer, and SHALL NOT log faster ticks.
 
 #### Scenario: A slow tick is logged
 
-- **WHEN** a tick closure takes 16ms or longer
+- **WHEN** the timing log is on and a tick closure takes 16ms or longer
 - **THEN** a `[tick]` line with its duration is logged
 
 #### Scenario: A fast tick is not logged
 
-- **WHEN** a tick closure takes less than 16ms
+- **WHEN** the timing log is on and a tick closure takes less than 16ms
 - **THEN** no `[tick]` line is logged
