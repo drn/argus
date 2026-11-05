@@ -25,7 +25,11 @@ The full capability matrix (what each existing family declares, and why) is in
 Install it for real (`brew info --cask <name>` / `brew info <name>`; if `/opt/homebrew` isn't
 writable, download the cask URL from `brew info --json=v2 --cask <name>`, verify `sha256`, and copy
 the binary to `~/.local/bin`). An Argus sandbox blocks writes to most of `$HOME`, so run probes
-with `HOME=<scratch dir>` and inspect what the CLI creates. Record:
+with `HOME=<scratch dir>` and inspect what the CLI creates. Under a swapped `HOME`, asdf/uv shims
+(`python3`, `go`) exit 126, so call `/usr/bin/python3` and prebuilt test binaries (`go test -c`).
+A Bun/Node single-file binary carries its JS source: `strings -n 6 <bin> > bundle.txt` and grep it
+for the session-dir, MCP, and config-key logic instead of guessing from `--help`. Drive the TUI in a
+PTY (Python `pty.fork`) to check `/mcp`-style status without a paid model call. Record:
 
 | Question | How to find out | Family field |
 |---|---|---|
@@ -39,7 +43,7 @@ with `HOME=<scratch dir>` and inspect what the CLI creates. Record:
 | Flag it always needs at launch (e.g. opencode `--auto`) | `--help` | `LaunchFlag` |
 | Model flag | `--model`? config-only? | `ModelDelivery`, `KnownModels` |
 | Permission/approval flags | `--help` | `PermissionFlags`, `PermissionFlagTokens` |
-| Per-launch MCP config? | flag, env var, or only a global file | `MCPFlag` or `InjectGlobal` |
+| Per-launch MCP config? | flag, env var, a `--plugin-dir` Claude-style plugin's `.mcp.json`, or only a global file | `MCPFlag` or `InjectGlobal` |
 | Skill discovery | per-launch flag, env, config dir, global manifest | `SkillDelivery` |
 | Instruction files / flags it reads natively | docs (AGENTS.md? CLAUDE.md? an append-system-prompt flag? a config `instructions` list? a global rules dir?) — never prepend to the prompt | `RoutingDelivery` (flag/inline-config) or a family `InjectGlobal`/overlay (file-based) |
 | Env vars / config-dir override | `strings <binary> \| grep -E '^[A-Z_]+$'` | accounts, child-only config |
@@ -56,6 +60,13 @@ Two traps learned adding Cursor: (1) don't claim a generic binary name (`agent`)
 unambiguous one. (2) `LaunchFlag` is a single token; a second always-on flag (e.g. `--approve-mcps`)
 belongs in the default backend command. Also scope `SandboxGrants` to the specific state subdirs, never the
 CLI's whole config dir, when that dir holds MCP/permission config an unsandboxed CLI later trusts.
+
+Traps learned adding omp: (1) check the CLI's OWN default approval mode — if it auto-approves (omp's
+`yolo`), map Argus's `default` permission mode to its asking mode, not to nothing. (2) A CLI with no
+MCP flag may still load Claude-style plugins (`--plugin-dir` + `.mcp.json`) or a per-run config
+overlay (`--config`); both are child-scoped and beat `InjectGlobal`. (3) A home-relative session-dir
+encoding that checks the temp dir first breaks tests whose `HOME` is a `t.TempDir()` — set `TMPDIR`
+elsewhere in those tests.
 
 ## 2. Write the OpenSpec change first
 
@@ -114,8 +125,11 @@ daemon too old to send `kind`. Run `make mac-test` if you touch Swift.
 
 1. Text that enumerates backends: `internal/mcp/server.go` + `internal/mcp/hera.go` model
    descriptions, `internal/skills/builtin/hera/SKILL.md`, README Reference backend table.
-2. `internal/daemon/surface.go`: bump `SupervisorSpawnSurface` with a history bullet, then run
-   `go test ./internal/daemon/ -run Surface` and paste the printed `SpawnSurfaceDigest`.
+2. `internal/daemon/surface.go`: add every NEW file BuildCmd reaches (e.g. `internal/agent/<name>.go`,
+   any shared helper it pulls in) to `SupervisorSpawnPaths` — omitted files never move the digest, so
+   later edits silently skip the stale-supervisor guard. Then bump `SupervisorSpawnSurface` with a
+   history bullet, run `go test ./internal/daemon/ -run Surface`, and paste the printed
+   `SpawnSurfaceDigest`. Re-record it after every later edit (including `make fmt`) to a listed file.
 3. Add the new family's row to `context/knowledge/backends.md` and any non-obvious gotcha to
    `context/knowledge/gotchas/misc.md`.
 4. Archive the OpenSpec change into `openspec/specs/` in the same PR.
