@@ -67,6 +67,8 @@ The loop is:
 3. Drain the wake channel, so that output arriving during the draw wakes the pump again.
 4. Call `QueueUpdateDraw`, which blocks until the draw finishes. This gives natural backpressure and at most one draw queued.
 
+The next frame interval starts after that draw completes, so an event-loop stall cannot allow two immediate frames. Controlled quit closes `tickDone` first and leaves the event loop alive until the pump's one queued draw returns; only then does it stop tview, whose synchronous queue API has no cancellation operation.
+
 The first byte after a quiet period draws immediately, which is the case that matters for echo. The cap is a constant of about 8ms, tuned against the timing log. It is not a config key.
 
 ### 3. Pane visibility comes from what was actually drawn
@@ -131,6 +133,8 @@ A tick closure taking 16ms or longer logs `[tick] closure_ms=N`. The pump logs `
 Earlier guidance is that features which materially change the experience get an on/off setting, and pure logic moves don't. This adds no new UI or interaction path: panes look the same and only update sooner. So there is no setting and the frame cap stays a constant. If the busy-agent CPU check fails, the response is tuning (see risks).
 
 ## Baseline procedure
+
+**Coordinator amendment, 2026-11-05:** the v2 timing-only binary at `/tmp/argus-paint-baseline-v2.CyRaje/` is frozen with hotfix `2349aead`. Implementation may proceed before the remaining Before typing and busy CPU capture. Aaron will complete Before on that binary and After on a separately built repaint binary in one sitting, recording load and task count for both. The recorded idle Before figures remain valid. No deployment, push or PR is authorized until the coordinator resumes those steps; always choose Skip/Esc in scratch-binary skew modals, since a restart action can repoint the shared deployment at the scratch binary.
 
 The timing log has to run in a TUI without the repaint change, and a TUI change only takes effect when Aaron relaunches. Workers must not deploy: the dogfood daemon is shared with the MySQL coordinator and `iris_set_dogfood` overwrites it.
 

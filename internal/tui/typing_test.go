@@ -216,8 +216,8 @@ func TestTypingRealKeyPaths(t *testing.T) {
 			testutil.Equal(t, len(a.typing.pending), 1)
 			testutil.Equal(t, a.typing.pending[0].queued.IsZero(), false)
 			testutil.Equal(t, a.typing.pending[0].output.Load() != 0, true)
-			// The legacy follow-up goroutine is intentionally still present for
-			// the baseline. Its count comparison sees no later output in this test.
+			// The fixture echoes synchronously; output-driven repainting is
+			// exercised separately through the real event-loop smoke tests.
 			a.typing.close()
 		})
 	}

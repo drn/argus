@@ -228,14 +228,18 @@ func (tr *typingTracker) subscription(tp *terminal.TerminalPane, sess agentview.
 }
 
 func (tr *typingTracker) reconcile(panes ...*terminal.TerminalPane) {
-	for _, tp := range panes {
-		sess, total, drawn := tp.TakePaint()
-		if !drawn {
+	tr.reconcileFrames(terminalFrames(panes...))
+}
+
+func (tr *typingTracker) reconcileFrames(frames []paneFrame) {
+	for _, frame := range frames {
+		tp := frame.pane
+		if !frame.drawn {
 			tr.unsubscribe(tp)
 			continue
 		}
-		if sub := tr.subscription(tp, sess); sub != nil {
-			tr.painted(sub.probe, total)
+		if sub := tr.subscription(tp, frame.session); sub != nil {
+			tr.painted(sub.probe, frame.fed)
 		}
 	}
 }

@@ -8,13 +8,24 @@ Always choose **Skip** (or Esc) in a scratch binary's skew modal. Never select e
 
 The replacement timing-only binary includes hotfix `2349aead` and was built at `c0ed1989` with Go 1.26.8. Its first observed timing line is 2026-11-05 09:30:58.505 PST. Both binaries and all capture files are under `/tmp/argus-paint-baseline-v2.CyRaje/`.
 
-This baseline is **incomplete**: busy CPU and the three-pane typing window are pending while Aaron is in meetings. Repaint implementation remains gated on completing and committing Before.
+This baseline is **incomplete**: busy CPU and the three-pane typing window are pending while Aaron is in meetings. On 2026-11-05 the coordinator authorized repaint implementation while the v2 baseline binary stays frozen; the remaining Before and After captures will run back-to-back later, with load and task count recorded for both.
 
 - **Machine snapshot at 09:31:55 PST:** uptime 17 days, 19:33; load 3.20 / 3.27 / 4.88. MCP reported 2 tasks with `in_progress` status, not a verified live-process count.
 - **Deployment:** daemon, supervisor and installed TUI were restored to `2349aead` by the coordinator before this capture. The worker made no process or deployment changes.
 - **Idle CPU:** request bounds 09:31:55–09:32:17 PST, with the keyboard hands-off while Aaron was in meetings; the screen content was not independently identified. The native profile reports duration 20.15s and 1.42s total CPU samples, or **7.05% of one core**. Text: `before-idle-cpu.txt`; raw: `pprof.argus-baseline.samples.cpu.001.pb.gz`.
 - **Idle stalls:** separate 30-second sampler, 09:32:39–09:33:09 PST, started after CPU profiling ended. It reports **30 runs**, median **14.977ms**, p90 **164.966ms**, maximum **240.040ms**, and **5.70%** stalled. Raw text: `before-stalls.txt`. As in the prescribed method, repeated goroutine dumps add overhead.
 - **Pending:** coordinator's `BUSY NOW` signal, busy 20-second CPU profile, completed Tasks/Hera coordinator/Hera worker typing, bounded final latency report and final capture end time. The interim report in `before-interim-report.txt` is retained but is not the final baseline table.
+
+## Paired capture procedure
+
+The coordinator approved completing the remaining Before and After typing and busy CPU captures back-to-back. Keep the same terminal size and daemon/supervisor deployment, and choose **Skip/Esc** in both skew modals. Close only the TUI between runs.
+
+1. Launch frozen Before: `ARGUS_TYPING_LOG=1 /tmp/argus-paint-baseline-v2.CyRaje/argus-baseline`.
+2. Record the start time, load and task count. In each of Tasks, Hera coordinator and Hera worker, type at least 200 keystrokes without submitting, then clear the composer. With an agent streaming on screen, tell the coordinator `BEFORE BUSY NOW` and hold that screen for 60 seconds so the worker can capture 20 seconds of CPU.
+3. Record the end time and save the bounded latency report immediately. Quit this TUI, then launch After: `ARGUS_TYPING_LOG=1 /tmp/argus-paint-after.GB4lCf/argus-repaint`.
+4. Repeat the same three-pane typing and streaming workload, reporting `AFTER BUSY NOW`. Record start/end times, load and task count again; save the bounded report. An additional hands-off After window permits the matching idle profile; the earlier idle Before numbers above remain retained.
+
+The matching report tool is `/tmp/argus-paint-after.GB4lCf/argus-latency`. The worker captures CPU from `http://127.0.0.1:6061/debug/pprof/profile?seconds=20` in each busy window. CPU comparison, latency tables, any frame-cap tuning, archive, push and PR await this paired capture and the coordinator's next instruction.
 
 ## Confound (2026-11-05 08:34-08:41)
 

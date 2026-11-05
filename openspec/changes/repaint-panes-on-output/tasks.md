@@ -14,21 +14,21 @@
 - [x] 2.2 Add `cmd/argus-latency` with `report` (`--since`, `--until`, `--last`, `--log`) and `stalls` (`--addr`, `--duration`, `--interval`). Add its `main.go` to `coverage-ignore.txt` with the reason.
 - [x] 2.3 Run `make pre-pr`, commit the timing log and tool as their own commit, and push with `iris_push`.
 - [ ] 2.4 Follow "Before capture" and "Capture window" in `design.md`: build the baseline binary outside the repository, send `hera_send(status="blocked")` with its path, and wait. Do not use `iris_set_dogfood`, `iris_publish` or `iris_reload`.
-- [ ] 2.5 Write the results to `measurements.md` under "Before" and commit. Do not start group 3 until this is committed.
+- [ ] 2.5 Complete the Before results in `measurements.md` and commit before opening the PR. Per the 2026-11-05 coordinator amendment, group 3 may proceed while the frozen v2 baseline awaits its remaining typing and busy CPU capture; Before and After will be measured back-to-back later.
 
 Baseline verification: `make pre-pr` was run in full; Go 1.26.8's 11 standard-library vulnerabilities stopped its advisory-in-CI `vuln` step. Per coordinator approval, build/vet/format/lint and the complete race/coverage gate were rerun on Go 1.26.8 with `GOFLAGS=-p=3` and inherited `CODEX_HOME`/`CODEX_SQLITE_HOME` removed so tests use fixture homes. All passed, with 0 lint issues and 88.9% filtered coverage. `openspec validate --all --strict` passed all 78 items. No repository toolchain setting changed.
 
 ## 3. Output-driven repaint (repaint commit)
 
-- [ ] 3.1 Add the repaint pump with tests using `testing/synctest`: immediate leading-edge draw, frame cap, coalescing, the draw-during-output re-wake, one queued draw at most, and exit on `tickDone`.
-- [ ] 3.2 Connect a writer to the pump's wake channel, always attached whether or not the timing log is on, so only sessions drawn in the last frame can wake it. Wake once when subscribing. Record the atomic output timestamp only when the timing log is on.
-- [ ] 3.3 Add the `Done` watcher per subscription, cancelled on unsubscribe, with a test that a session ending wakes the pump and that no goroutine outlives its subscription.
-- [ ] 3.4 Remove the 16ms follow-up goroutine from `handleAgentKey`.
-- [ ] 3.5 Rename `startAgentRedrawLoop` to `startAgentPTYSyncLoop`, rename `redrawLoopGen` and `redrawLoopShouldExit` to match, and remove its `QueueUpdateDraw` calls while keeping `SyncPTYSize`, the cadence and the generation guard. Update all four call sites (`app.go`, `artifacts.go`, `jumpswitcher.go`) and `TestApp_RedrawLoopGenSupersedesStaleLoop`.
-- [ ] 3.6 Add writer fan-out to `apiclient.Session` mirroring `RemoteSession` (ring first, snapshot under the lock, write outside it, drop failed writers), replace its stale comment, and test it.
-- [ ] 3.7 When the timing log is on, log `[repaint] wakes=N frames=N window_s=30` every 30 seconds while active, and stay silent when idle. Log pump failures and shutdown through `uxlog` regardless, per the logging requirements in `AGENTS.md`.
-- [ ] 3.8 Add smoke tests on a SimulationScreen with the real event loop: output on a visible Tasks pane repaints, output on a visible Hera pane repaints, output on a hidden session does not, and an idle pane produces no pump draws.
-- [ ] 3.9 Confirm by diff that `internal/agent/session.go`, `internal/agent/ringbuffer.go`, `internal/daemon/client/` and `internal/daemon/surface.go` are untouched and `TestSupervisorSurfaceDigest` passes without re-recording.
+- [x] 3.1 Add the repaint pump with tests using `testing/synctest`: immediate leading-edge draw, frame cap, coalescing, the draw-during-output re-wake, one queued draw at most, and exit on `tickDone`.
+- [x] 3.2 Connect a writer to the pump's wake channel, always attached whether or not the timing log is on, so only sessions drawn in the last frame can wake it. Wake once when subscribing. Record the atomic output timestamp only when the timing log is on.
+- [x] 3.3 Add the `Done` watcher per subscription, cancelled on unsubscribe, with a test that a session ending wakes the pump and that no goroutine outlives its subscription.
+- [x] 3.4 Remove the 16ms follow-up goroutine from `handleAgentKey`.
+- [x] 3.5 Rename `startAgentRedrawLoop` to `startAgentPTYSyncLoop`, rename `redrawLoopGen` and `redrawLoopShouldExit` to match, and remove its `QueueUpdateDraw` calls while keeping `SyncPTYSize`, the cadence and the generation guard. Update all four call sites (`app.go`, `artifacts.go`, `jumpswitcher.go`) and `TestApp_RedrawLoopGenSupersedesStaleLoop`.
+- [x] 3.6 Add writer fan-out to `apiclient.Session` mirroring `RemoteSession` (ring first, snapshot under the lock, write outside it, drop failed writers), replace its stale comment, and test it.
+- [x] 3.7 When the timing log is on, log `[repaint] wakes=N frames=N window_s=30` every 30 seconds while active, and stay silent when idle. Log pump failures and shutdown through `uxlog` regardless, per the logging requirements in `AGENTS.md`.
+- [x] 3.8 Add smoke tests on a SimulationScreen with the real event loop: output on a visible Tasks pane repaints, output on a visible Hera pane repaints, output on a hidden session does not, and an idle pane produces no pump draws.
+- [x] 3.9 Confirm by diff that `internal/agent/session.go`, `internal/agent/ringbuffer.go`, `internal/daemon/client/` and `internal/daemon/surface.go` are untouched and `TestSupervisorSurfaceDigest` passes without re-recording.
 
 ## 4. Measure and tune
 
@@ -38,7 +38,9 @@ Baseline verification: `make pre-pr` was run in full; Go 1.26.8's 11 standard-li
 
 ## 5. Documentation and ship
 
-- [ ] 5.1 Update `gotchas/ui-threading.md` (fix-redraw-loop-leak bullet) and `gotchas/pty-terminal.md` (the 200ms loop and 16ms follow-up bullets) to describe the pump, keeping the history. Add new gotchas for the writer-based signal and why `session.go` must stay untouched, and update `context/knowledge/index.md`.
-- [ ] 5.2 Run `make pre-pr` in full.
+- [x] 5.1 Update `gotchas/ui-threading.md` (fix-redraw-loop-leak bullet) and `gotchas/pty-terminal.md` (the 200ms loop and 16ms follow-up bullets) to describe the pump, keeping the history. Add new gotchas for the writer-based signal and why `session.go` must stay untouched, and update `context/knowledge/index.md`.
+- [x] 5.2 Run `make pre-pr` in full.
+
+Repaint verification (2026-11-05): the full gate passes build/vet/format/lint (0 issues), then stops at the same 11 Go 1.26.8 standard-library vulnerabilities covered by the coordinator's advisory exception. The separate full `test-cover-gate` passes with fixture environment, `GOFLAGS=-p=3`, and 88.9% filtered coverage. Focused race tests, `TestSupervisorSurfaceDigest` without re-recording, and all 78 strict OpenSpec validations pass. `hera-review` and `hera-review-test-adversary` findings were fixed and rechecked; measurement, tuning, archive, push and PR remain pending.
 - [ ] 5.3 Archive only this change in the same PR (`openspec archive repaint-panes-on-output`). The other two change folders stay active.
 - [ ] 5.4 Push with `iris_push`, open the PR with `iris_gh_pr_create` including both measurement tables, and state in the description that web and macOS are unaffected and that no supervisor restart is needed.

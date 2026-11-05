@@ -676,12 +676,12 @@ func TestJumpSwitcher_TransparentToAgentViewSession(t *testing.T) {
 	app.openJumpSwitcher()
 	testutil.True(t, app.isViewingTaskSession("ts-cur"))
 	testutil.False(t, app.isViewingTaskSession("ts-zeta"))
-	gen := app.redrawLoopGen["ts-cur"]
+	gen := app.ptySyncLoopGen["ts-cur"]
 
 	switcherKey(app, tcell.KeyEscape, 0)
 	testutil.Equal(t, app.mode, modeAgent)
 	testutil.True(t, app.agentPane.Session() == sess)
-	testutil.Equal(t, app.redrawLoopGen["ts-cur"], gen+1)
+	testutil.Equal(t, app.ptySyncLoopGen["ts-cur"], gen+1)
 
 	t.Run("no session for the viewed task is a no-op", func(t *testing.T) {
 		zeta, err := d.Get("ts-zeta")
@@ -690,7 +690,7 @@ func TestJumpSwitcher_TransparentToAgentViewSession(t *testing.T) {
 		app.openJumpSwitcher()
 		switcherKey(app, tcell.KeyEscape, 0)
 		testutil.Nil(t, app.agentPane.Session())
-		testutil.Equal(t, app.redrawLoopGen["ts-zeta"], uint64(0))
+		testutil.Equal(t, app.ptySyncLoopGen["ts-zeta"], uint64(0))
 	})
 }
 

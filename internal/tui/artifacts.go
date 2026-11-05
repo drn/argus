@@ -123,7 +123,7 @@ func (a *App) closeArtifacts() {
 			a.tapp.SetFocus(a.agentPane)
 		}
 		if sess := a.runner.Get(a.agentState.TaskID); sess != nil && sess.Alive() {
-			a.startAgentRedrawLoop(a.agentState.TaskID, sess)
+			a.startAgentPTYSyncLoop(a.agentState.TaskID, sess)
 		}
 	} else {
 		a.restorePageFocus(a.artifactPrevPage)

@@ -286,7 +286,7 @@ func TestSession_LocalAccessors(t *testing.T) {
 	// Second WorkDir call hits the cache.
 	testutil.Equal(t, s.WorkDir(), "/wt/t1")
 	testutil.NoError(t, s.Stop())
-	// AddWriter et al. are no-ops; just call them for coverage.
+	// Nil writers are ignored by the output subscription API.
 	s.AddWriter(nil)
 	s.AddWriterFrom(nil, 0)
 	s.AddWriterFromTolerant(nil, 0)

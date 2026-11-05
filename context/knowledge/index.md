@@ -4,6 +4,7 @@ Non-obvious invariants and gotchas, split by topic. Read the relevant file when 
 
 | File | Topic | Bullets |
 | --- | --- | --- |
+| [gotchas/ui-threading.md](gotchas/ui-threading.md), [gotchas/pty-terminal.md](gotchas/pty-terminal.md) | Output-driven repaint: drawn-pane subscriptions, coalescing before draw, cancellable Done watchers, PTY-only generation guard, writer API avoids supervisor stream changes, quit drains a queued draw | 4 |
 | [gotchas/ui-threading.md](gotchas/ui-threading.md) | Opt-in typing timing: UI-owned bookkeeping, atomic output probes, and measurement after `lazyScreen.Show` flushes | 1 |
 | [gotchas/daemon-rpc.md](gotchas/daemon-rpc.md) | MCP client deadlines: Claude HTTP/SSE and Codex 60s defaults, shared 120s inbox cap plus margin, progress cannot extend Claude deadline, restart supervisor and spawn fresh to verify | 1 |
 | [gotchas/pty-terminal.md](gotchas/pty-terminal.md), [gotchas/hera-view.md](gotchas/hera-view.md), [gotchas/daemon-rpc.md](gotchas/daemon-rpc.md), [gotchas/remote-tui.md](gotchas/remote-tui.md) | Faster pane rerender: always-split role launch geometry, off-thread publication, PID-scoped anchors and stale callback rejection, border pending status, width-only three-second escalation with identity-checked descendant reap, cooperative-exit preservation and shared Claude daemon subtree exclusion | 7 |

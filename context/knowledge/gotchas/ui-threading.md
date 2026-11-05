@@ -1,5 +1,11 @@
 ## UI Threading
 
+- **Quit through `stopTUI`, which stops output wakes and lets the single queued repaint return before stopping tview.** `QueueUpdateDraw` is synchronous and cannot be cancelled after enqueue; stopping the event loop first would strand the pump.
+
+- **Output subscriptions follow panes actually drawn, including Hera fullscreen, rather than tab or focus guesses.** The shared pump coalesces notifications before a draw, preserving output that arrives during it; its writers never block, and each Done watcher is cancelled when its pane hides or rebinds.
+- **Keep the historical redraw-loop generation guard on the renamed PTY-only loop (`ptySyncLoopGen`, `startAgentPTYSyncLoop`, `ptySyncLoopShouldExit`).** The fast leave/return leak described below still applies to size sync, but that timer no longer queues draws.
+- **Use existing `AddWriterFrom` for repaint notifications; do not add a signal to `agent/session.go` or change its ring buffer.** Those files participate in the supervisor stream digest, while an in-process writer subscription needs only a TUI relaunch.
+
 - **Typing timing is opt-in per TUI launch (`ARGUS_TYPING_LOG=1`); `afterDraw` precedes the actual terminal flush.** Keep key/closure bookkeeping on the UI goroutine, record stream arrival through atomics only, and finish latency samples after `lazyScreen.Show` delegates; no input content belongs in the log.
 
 - **Never run git commands synchronously on the UI thread.** Even fast commands take 50-500ms. Use background goroutines + `QueueUpdateDraw`.
