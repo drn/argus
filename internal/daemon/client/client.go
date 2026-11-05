@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
@@ -844,6 +845,14 @@ func (c *Client) SetFocused(taskID string, focused bool) {
 func (c *Client) AccountUsage() (map[string]usagebudget.Reading, error) {
 	var usage map[string]usagebudget.Reading
 	err := c.call("Daemon.AccountUsage", &daemon.Empty{}, &usage)
+	return usage, err
+}
+
+// RoutingUsage reads the daemon's tier-routing readings (Claude per account
+// plus Codex).
+func (c *Client) RoutingUsage() (backendtier.Usage, error) {
+	var usage backendtier.Usage
+	err := c.call("Daemon.RoutingUsage", &daemon.Empty{}, &usage)
 	return usage, err
 }
 

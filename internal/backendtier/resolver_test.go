@@ -243,12 +243,12 @@ func TestResolveBackend_Headroom(t *testing.T) {
 			want:  "codex",
 		},
 		{
-			// Scenario: Every tier over threshold → empty (caller falls back to
-			// the default-backend precedence).
-			name:   "every tier over threshold",
+			// Every tier over threshold → the least-used tier (codex 90 < claude
+			// 95), never empty: empty would send callers to the default account.
+			name:   "every tier over threshold picks least-used",
 			claude: known(95), codex: known(90),
 			tiers: []config.BackendTier{claudeTier(70), codexTier(80)},
-			want:  "",
+			want:  "codex",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

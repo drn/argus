@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/usagebudget"
@@ -34,4 +35,26 @@ func TestCliUsageOld(t *testing.T) {
 	_, err := c.AccountUsage()
 	testutil.Error(t, err)
 	testutil.Nil(t, c.AccountUsageSource()(config.Config{}))
+}
+
+func TestCliRoutingUsage(t *testing.T) {
+	fd := newFakeDaemon(t)
+	fd.mu.Lock()
+	fd.routing = backendtier.Usage{
+		Claude: map[string]usagebudget.Reading{"personal": {Percentage: 70}},
+		Codex:  &usagebudget.Reading{Percentage: 12},
+	}
+	fd.mu.Unlock()
+	c := fakeClient(t, fd)
+
+	got, err := c.RoutingUsage()
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Claude["personal"].Percentage, 70.0)
+	testutil.Equal(t, got.Codex.Percentage, 12.0)
+
+	fd.mu.Lock()
+	fd.usageMissing = true
+	fd.mu.Unlock()
+	_, err = c.RoutingUsage()
+	testutil.Error(t, err)
 }

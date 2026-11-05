@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/testutil"
@@ -34,6 +35,7 @@ type fakeDaemon struct {
 
 	usage        map[string]usagebudget.Reading // AccountUsage reply
 	usageMissing bool                           // simulate an older daemon
+	routing      backendtier.Usage              // RoutingUsage reply
 }
 
 func newFakeDaemon(t *testing.T) *fakeDaemon {
@@ -59,6 +61,16 @@ func (s *FakeRPCService) AccountUsage(_ *daemon.Empty, resp *map[string]usagebud
 		return errors.New("rpc: can't find method Daemon.AccountUsage")
 	}
 	*resp = s.fd.usage
+	return nil
+}
+
+func (s *FakeRPCService) RoutingUsage(_ *daemon.Empty, resp *backendtier.Usage) error {
+	s.fd.mu.Lock()
+	defer s.fd.mu.Unlock()
+	if s.fd.usageMissing {
+		return errors.New("rpc: can't find method Daemon.RoutingUsage")
+	}
+	*resp = s.fd.routing
 	return nil
 }
 

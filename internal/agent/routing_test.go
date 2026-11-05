@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -157,4 +158,40 @@ func TestSubCoordinatorRoutesAccountFromBlankParent(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, result.Task.Backend, "test")
 	testutil.Equal(t, result.Task.Account, "work")
+}
+
+// TUI-process creation resolves tiers in-process, where the probe caches are
+// empty. With the daemon's readings installed (the TUI does this at startup) a
+// task must land on the account with room, and when every account is over its
+// threshold on the least-used one — never silently on the default account.
+func TestResolveTaskChoiceUsesInstalledDaemonReadings(t *testing.T) {
+	cfg := config.Config{
+		Backends: map[string]config.Backend{"claude": {Command: "claude"}},
+		Accounts: map[string]config.Account{"personal": {ClaudeConfigDir: t.TempDir()}},
+		BackendRouting: config.BackendRoutingConfig{Strategy: config.StrategyHeadroom, Tiers: []config.BackendTier{
+			{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 90},
+			{Backend: "claude", Account: "personal", Probe: config.ProbeClaudeUsage, ThresholdPct: 90},
+		}},
+	}
+	for _, tc := range []struct {
+		name              string
+		def, personal     float64
+		wantAccount, want string
+	}{
+		{"room on personal", 98, 70, "personal", "claude"},
+		{"all over picks least-used", 98, 93, "personal", "claude"},
+		{"all over, default least-used", 91, 99, "default", "claude"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := backendtier.SetUsageSource(func() (backendtier.Usage, error) {
+				return backendtier.Usage{Claude: map[string]usagebudget.Reading{
+					"default": {Percentage: tc.def}, "personal": {Percentage: tc.personal},
+				}}, nil
+			})
+			defer restore()
+			choice := resolveTaskChoice("", "", cfg, "")
+			testutil.Equal(t, choice.Backend, tc.want)
+			testutil.Equal(t, choice.Account, tc.wantAccount)
+		})
+	}
 }

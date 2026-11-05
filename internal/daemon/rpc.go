@@ -46,6 +46,14 @@ func (s *RPCService) AccountUsage(_ *Empty, resp *map[string]usagebudget.Reading
 	return nil
 }
 
+// RoutingUsage returns the daemon's current tier-routing readings (Claude per
+// account plus Codex) so a TUI process resolving tiers locally routes on real
+// readings; its own usagebudget/Codex caches are never populated.
+func (s *RPCService) RoutingUsage(_ *Empty, resp *backendtier.Usage) error {
+	*resp = backendtier.LocalUsage(s.daemon.db.Config())
+	return nil
+}
+
 // logRPCErr logs an RPC handler error under the given method name and returns
 // err.Error() for assignment to the response's Error field. It folds the
 // repeated `resp.Error = err.Error(); slog.Error(method, "err", err)` pair
