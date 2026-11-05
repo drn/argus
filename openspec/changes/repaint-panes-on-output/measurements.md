@@ -4,6 +4,18 @@
 
 Always choose **Skip** (or Esc) in a scratch binary's skew modal. Never select either restart action: during the first attempt, choosing **Restart supervisor** also repointed `~/.argus/argusd` at the temporary baseline binary, changing the shared deployment. The coordinator restored the daemon, supervisor and installed TUI to hotfix `2349aead` ([PR #1111](https://github.com/drn/argus/pull/1111)) before requesting a new Before capture; keep that deployment fixed through the replacement Before and After runs.
 
+## Before (replacement capture in progress)
+
+The replacement timing-only binary includes hotfix `2349aead` and was built at `c0ed1989` with Go 1.26.8. Its first observed timing line is 2026-11-05 09:30:58.505 PST. Both binaries and all capture files are under `/tmp/argus-paint-baseline-v2.CyRaje/`.
+
+This baseline is **incomplete**: busy CPU and the three-pane typing window are pending while Aaron is in meetings. Repaint implementation remains gated on completing and committing Before.
+
+- **Machine snapshot at 09:31:55 PST:** uptime 17 days, 19:33; load 3.20 / 3.27 / 4.88. MCP reported 2 tasks with `in_progress` status, not a verified live-process count.
+- **Deployment:** daemon, supervisor and installed TUI were restored to `2349aead` by the coordinator before this capture. The worker made no process or deployment changes.
+- **Idle CPU:** request bounds 09:31:55–09:32:17 PST, with the keyboard hands-off while Aaron was in meetings; the screen content was not independently identified. The native profile reports duration 20.15s and 1.42s total CPU samples, or **7.05% of one core**. Text: `before-idle-cpu.txt`; raw: `pprof.argus-baseline.samples.cpu.001.pb.gz`.
+- **Idle stalls:** separate 30-second sampler, 09:32:39–09:33:09 PST, started after CPU profiling ended. It reports **30 runs**, median **14.977ms**, p90 **164.966ms**, maximum **240.040ms**, and **5.70%** stalled. Raw text: `before-stalls.txt`. As in the prescribed method, repeated goroutine dumps add overhead.
+- **Pending:** coordinator's `BUSY NOW` signal, busy 20-second CPU profile, completed Tasks/Hera coordinator/Hera worker typing, bounded final latency report and final capture end time. The interim report in `before-interim-report.txt` is retained but is not the final baseline table.
+
 ## Confound (2026-11-05 08:34-08:41)
 
 This capture is **excluded from the Before baseline**. The coordinator paused it at 08:41:44 PST after identifying synchronous daemon usage RPCs on the UI thread, introduced by `a6d36e54` ([PR #1110](https://github.com/drn/argus/pull/1110)). The separate `0a-routing-stall` hotfix owns that regression; repaint implementation has not started.
