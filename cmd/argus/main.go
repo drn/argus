@@ -281,7 +281,11 @@ func runTUI() {
 		defer agent.SetAccountUsageSource(client.AccountUsageSource())()
 		// Task creation resolves backend tiers in this process; the probe
 		// caches it would read are empty here, so route on the daemon's.
-		defer backendtier.SetUsageSource(client.RoutingUsage)()
+		// Cached + refreshed off-thread: resolution runs on the UI goroutine in
+		// per-tick Hera refresh, where a synchronous RPC froze typing.
+		routingUsage := backendtier.NewCachedUsage(client.RoutingUsage, time.Minute, 5*time.Minute)
+		routingUsage.Prime()
+		defer backendtier.SetUsageSource(routingUsage.Read)()
 		defer client.Close()
 	}
 

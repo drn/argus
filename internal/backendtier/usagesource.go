@@ -1,6 +1,7 @@
 package backendtier
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/drn/argus/internal/config"
@@ -54,7 +55,6 @@ func currentReadings() readings {
 	if read != nil {
 		u, err := read()
 		if err == nil {
-			uxlog.Log("[backendtier] using daemon usage readings: claude_accounts=%d codex=%t", len(u.Claude), u.Codex != nil)
 			return readings{
 				claude: func(account string) (float64, bool) {
 					if account == "" {
@@ -71,7 +71,12 @@ func currentReadings() readings {
 				},
 			}
 		}
-		uxlog.Log("[backendtier] daemon usage read failed, falling back to local caches: %v", err)
+		// ErrNoUsageSnapshot is the cached source's routine "not warm yet"; it
+		// can fire per role per tick, so it stays silent (the refresh failure
+		// itself is logged once per attempt by CachedUsage).
+		if !errors.Is(err, ErrNoUsageSnapshot) {
+			uxlog.Log("[backendtier] daemon usage read failed, falling back to local caches: %v", err)
+		}
 	}
 	return readings{
 		claude: func(account string) (float64, bool) { return claudeUsageForAccount([]string{account})() },
