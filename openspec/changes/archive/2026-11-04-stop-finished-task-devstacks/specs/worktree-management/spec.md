@@ -2,12 +2,12 @@
 
 ### Requirement: Dev stacks of finished tasks are stopped
 
-The daemon SHALL periodically scan running dev-stack processes, map each to its worktree's task row by exact worktree path, and stop every dev-stack process of a task that is `complete` or archived and has no live session. The sweep SHALL be driven by the process table and task rows, not by session exits, so it covers a task whose session ended before the sweeper observed it. A stack SHALL be stopped only after the conditions hold on two consecutive ticks. Worktrees with no matching task row SHALL be left alone. A failed scan SHALL be logged and the tick skipped.
+The daemon SHALL periodically scan running dev-stack processes, map each to its worktree's task row by exact worktree path, and stop every dev-stack process of a task that is `complete` or archived and has no live session. The sweep SHALL be driven by the process table and task rows, not by session exits, so it covers a task whose session ended before the sweeper observed it. A stack SHALL be stopped only after the conditions have held continuously for a grace period of about one minute. Worktrees with no matching task row SHALL be left alone. A failed scan SHALL be logged and the tick skipped.
 
 #### Scenario: Stack of a task whose session already exited
 
 - **WHEN** a task's session exited cleanly, the task became `complete`, and its worktree still has a running `mysqld`
-- **THEN** after two consecutive ticks with no live session the sweeper stops that stack
+- **THEN** after the grace period with no live session the sweeper stops that stack
 
 #### Scenario: Archived task
 
@@ -51,7 +51,7 @@ The sweeper SHALL consider only worktrees whose cleaned path is inside the argus
 #### Scenario: Hand-started stack in a finished worktree
 
 - **WHEN** a stack runs in a managed worktree of a finished task with no session, however it was started
-- **THEN** it is stopped after two consecutive ticks, unless `devstack.stop_finished` is false
+- **THEN** it is stopped after the grace period, unless `devstack.stop_finished` is false
 
 ### Requirement: Deliberately resumed finished tasks are exempt
 

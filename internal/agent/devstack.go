@@ -30,6 +30,11 @@ type DevStackProc struct {
 	PID          int
 	Name         string
 	WorktreePath string
+	// Supervisor is true for processes that can respawn the others
+	// (process-compose, or a `devbox run --` wrapper). stopDevStackProcs
+	// signals these before the services they supervise so a restart policy
+	// cannot race the kill.
+	Supervisor bool
 }
 
 // pgrepOutput is the exec seam; tests swap it to avoid shelling out to a
@@ -128,11 +133,11 @@ func parsePgrepOutput(out []byte) []DevStackProc {
 		if wt == "" {
 			continue
 		}
-		name := processNameFromCmdline(cmdline)
+		name, supervisor := classifyDevStackCmdline(cmdline)
 		if name == "" {
 			continue
 		}
-		procs = append(procs, DevStackProc{PID: pid, Name: name, WorktreePath: wt})
+		procs = append(procs, DevStackProc{PID: pid, Name: name, WorktreePath: wt, Supervisor: supervisor})
 	}
 	return procs
 }
@@ -150,25 +155,79 @@ func extractWorktreePath(cmdline string) string {
 // processNameFromCmdline returns which known dev-stack binary cmdline
 // belongs to, or "" if none match.
 func processNameFromCmdline(cmdline string) string {
-	for _, name := range devStackProcessNames {
-		if strings.Contains(cmdline, name) {
-			return name
+	name, _ := classifyDevStackCmdline(cmdline)
+	return name
+}
+
+// classifyDevStackCmdline identifies the dev-stack binary a command line
+// EXECUTES: the basename of argv[0], or of the first token after `devbox run
+// --` when argv[0] is devbox. A bare substring match is not enough: `pgrep -f`
+// also matches processes that merely mention a binary name in their
+// arguments (an agent whose prompt says "mysqld" and names a worktree), and
+// the finished-stack sweeper would then SIGTERM a live agent. supervisor is
+// true for process-compose and for a devbox wrapper, which can respawn the
+// services they run.
+func classifyDevStackCmdline(cmdline string) (name string, supervisor bool) {
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 {
+		return "", false
+	}
+	exe := execBaseName(fields[0])
+	if exe == "devbox" {
+		for i := 1; i+1 < len(fields); i++ {
+			if fields[i] == "--" {
+				if inner := execBaseName(fields[i+1]); isDevStackBinary(inner) {
+					return inner, true
+				}
+				return "", false
+			}
+		}
+		return "", false
+	}
+	if isDevStackBinary(exe) {
+		return exe, exe == "process-compose"
+	}
+	return "", false
+}
+
+// execBaseName returns the basename of an executable path, undoing the Nix
+// wrapper naming convention (".mysqld-wrapped" -> "mysqld").
+func execBaseName(path string) string {
+	b := filepath.Base(path)
+	b = strings.TrimPrefix(b, ".")
+	return strings.TrimSuffix(b, "-wrapped")
+}
+
+func isDevStackBinary(name string) bool {
+	for _, n := range devStackProcessNames {
+		if name == n {
+			return true
 		}
 	}
-	return ""
+	return false
 }
+
+// devStackSupervisorGrace bounds the wait after the supervisor-only SIGTERM
+// round, before the remaining services are signaled directly.
+var devStackSupervisorGrace = 2 * time.Second
+
+// StopDevStack is the exported entry for callers outside this package (the
+// daemon's finished-task dev-stack sweeper). Same behavior as the
+// removal-time teardown.
+func StopDevStack(worktreePath string) { stopDevStackFor(worktreePath) }
 
 // stopDevStackFor stops any dev-stack process (mysqld/redis-server/postgres/
 // caddy/process-compose) whose command line embeds worktreePath. Meant to
-// run before that worktree's files are removed. Best-effort throughout:
-// logs via uxlog, never returns an error — mirrors every other step in
-// RemoveWorktree.
+// run before that worktree's files are removed, and by the finished-task
+// sweeper. Best-effort throughout: logs via uxlog, never returns an error.
 //
-// Every matched process is SIGTERM'd directly — not just a process-compose
-// supervisor — because the supervisor-to-children shutdown cascade is not
+// Order: (1) SIGTERM supervisors only (process-compose, `devbox run --`
+// wrappers) and wait briefly, so a `restart: "always"` policy cannot respawn
+// a service we are about to kill; (2) rescan and SIGTERM every remaining
+// process DIRECTLY — the supervisor-to-children shutdown cascade is not
 // reliable (a live investigation found a sibling redis-server and caddy
-// survive SIGTERM to their process-compose parent while mysqld did not).
-// After a short grace period, anything still running is SIGKILLed.
+// survive SIGTERM to their process-compose parent while mysqld did not);
+// (3) after a grace period SIGKILL anything still running, supervisors first.
 //
 // Matching requires worktreePath to be the exact extracted worktree root of
 // a process's command line, not a bare substring — guards against a
@@ -182,6 +241,19 @@ func stopDevStackFor(worktreePath string) {
 	if len(found) == 0 {
 		return
 	}
+
+	if sups := supervisorsOf(found); len(sups) > 0 {
+		uxlog.Log("[worktree] stopDevStack: SIGTERM to %d supervisor(s) first for %q", len(sups), clean)
+		for _, p := range sups {
+			signalDevStackProc(p, syscall.SIGTERM)
+		}
+		time.Sleep(devStackSupervisorGrace)
+		found = scanForWorktree(clean)
+		if len(found) == 0 {
+			return
+		}
+	}
+
 	uxlog.Log("[worktree] stopDevStack: found %d dev-stack process(es) for %q, sending SIGTERM", len(found), clean)
 	for _, p := range found {
 		signalDevStackProc(p, syscall.SIGTERM)
@@ -194,9 +266,25 @@ func stopDevStackFor(worktreePath string) {
 		return
 	}
 	uxlog.Log("[worktree] stopDevStack: %d process(es) survived SIGTERM for %q, sending SIGKILL", len(remaining), clean)
-	for _, p := range remaining {
+	sups := supervisorsOf(remaining)
+	for _, p := range sups {
 		signalDevStackProc(p, syscall.SIGKILL)
 	}
+	for _, p := range remaining {
+		if !p.Supervisor {
+			signalDevStackProc(p, syscall.SIGKILL)
+		}
+	}
+}
+
+func supervisorsOf(procs []DevStackProc) []DevStackProc {
+	var out []DevStackProc
+	for _, p := range procs {
+		if p.Supervisor {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // scanForWorktree returns every currently running dev-stack process whose

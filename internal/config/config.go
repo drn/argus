@@ -19,6 +19,7 @@ type Config struct {
 	KB          KBConfig           `toml:"kb"`
 	API         APIConfig          `toml:"api"`
 	Hera        HeraConfig         `toml:"hera"`
+	DevStack    DevStackConfig     `toml:"devstack"`
 	Supervisor  SupervisorConfig   `toml:"supervisor"`
 	Bridge      BridgeConfig       `toml:"bridge"`
 	Argus       ArgusConfig        `toml:"argus"`
@@ -194,6 +195,17 @@ type BridgeConfig struct {
 	// Band and Toasts control visible mod UI and are read live by sessions.
 	Band   bool `toml:"band"`
 	Toasts bool `toml:"toasts"`
+}
+
+// DevStackConfig controls the daemon's finished-task dev-stack sweeper
+// (stop-finished-task-devstacks). config.toml-only; read live each tick.
+type DevStackConfig struct {
+	// StopFinished defaults to true (absent key => on): stop the devbox dev
+	// stack (mysqld, redis, postgres, caddy, process-compose) left running in
+	// the managed worktree of a complete/archived task with no live session.
+	// Set false to restore the old behavior of never touching them. Also
+	// stops a stack started by hand in such a worktree.
+	StopFinished bool `toml:"stop_finished"`
 }
 
 // HeraConfig controls the native Hera multi-agent coordination view.
@@ -540,7 +552,8 @@ func DefaultConfig() Config {
 			CoordinatorNudgeIncrement: 50000,
 			WorkerContextWindow:       1000000,
 		},
-		Bridge: BridgeConfig{Enabled: true, Delivery: true, Band: true, Toasts: true},
+		DevStack: DevStackConfig{StopFinished: true},
+		Bridge:   BridgeConfig{Enabled: true, Delivery: true, Band: true, Toasts: true},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process
 			// session-supervisor so the daemon can bounce without interrupting

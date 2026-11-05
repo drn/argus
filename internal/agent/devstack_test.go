@@ -253,13 +253,21 @@ func TestStopDevStackFor_RealProcess(t *testing.T) {
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		t.Fatalf("mkdir fake worktree: %v", err)
 	}
+	// A symlink to the sleep binary named "mysqld": argv[0] is the dev-stack
+	// binary and the worktree root is in its path, matching the executable-
+	// based classification (a #! script would show as /bin/sh <script>).
 	scriptPath := wt + "/mysqld"
-	script := "#!/bin/sh\nwhile true; do sleep 1; done\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil { //nolint:gosec // test fixture, needs +x
-		t.Fatalf("write fake mysqld script: %v", err)
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep not on PATH")
+	}
+	// A symlink, not a copy: a copied platform binary can be killed at exec
+	// by code-signing enforcement, while argv[0] stays the symlink path.
+	if err := os.Symlink(sleepBin, scriptPath); err != nil {
+		t.Fatalf("symlink fake mysqld: %v", err)
 	}
 
-	cmd := exec.Command(scriptPath)
+	cmd := exec.Command(scriptPath, "1000")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start fake dev-stack process: %v", err)
 	}
@@ -306,4 +314,107 @@ func waitUntilGone(pid int, timeout time.Duration) bool {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return false
+}
+
+func TestClassifyDevStackCmdline(t *testing.T) {
+	const wt = "/Users/aaron/.argus/worktrees/Sketch/t1"
+	tests := []struct {
+		name       string
+		cmdline    string
+		wantName   string
+		wantSuperv bool
+	}{
+		{"oct30 devbox wrapper", "devbox run -- mysqld --datadir=" + wt + "/tmp/mysql-data", "mysqld", true},
+		{"devbox wrapper abs path", "/usr/local/bin/devbox run -- /nix/store/x-mysql/bin/mysqld --datadir=" + wt + "/tmp/mysql-data", "mysqld", true},
+		{"oct30 launchd-parented mysqld", "/nix/store/x-mysql/bin/mysqld --datadir=" + wt + "/tmp/mysql-data", "mysqld", false},
+		{"nix wrapped binary", "/nix/store/x/bin/.mysqld-wrapped --datadir=" + wt + "/d", "mysqld", false},
+		{"process-compose is a supervisor", "/x/bin/process-compose -f " + wt + "/.devbox/virtenv/redis/process-compose.yaml", "process-compose", true},
+		{"devbox without run --", "devbox services up " + wt, "", false},
+		{"devbox run of unrelated binary", "devbox run -- go test " + wt + " mysqld", "", false},
+		{"agent prompt mentions binary and path", "claude --add-dir " + wt + " fix the postgres and mysqld startup", "", false},
+		{"empty", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n, sup := classifyDevStackCmdline(tt.cmdline)
+			testutil.Equal(t, n, tt.wantName)
+			testutil.Equal(t, sup, tt.wantSuperv)
+		})
+	}
+}
+
+func TestParsePgrepOutput_Oct30Shapes(t *testing.T) {
+	const wt = "/Users/aaron/.argus/worktrees/Sketch/t1"
+	out := "10 devbox run -- mysqld --datadir=" + wt + "/tmp/mysql-data\n" +
+		"11 /nix/store/x-mysql/bin/mysqld --datadir=" + wt + "/tmp/mysql-data\n" +
+		"12 claude --add-dir " + wt + " restart postgres\n"
+	procs := parsePgrepOutput([]byte(out))
+	testutil.Equal(t, len(procs), 2)
+	testutil.Equal(t, procs[0].PID, 10)
+	testutil.True(t, procs[0].Supervisor)
+	testutil.Equal(t, procs[1].PID, 11)
+	testutil.Equal(t, procs[1].WorktreePath, wt)
+}
+
+type sigRec struct {
+	PID int
+	Sig syscall.Signal
+}
+
+func stubStopSeams(t *testing.T, scans [][]byte) *[]sigRec {
+	t.Helper()
+	og, os2 := devStackGracePeriod, devStackSupervisorGrace
+	devStackGracePeriod, devStackSupervisorGrace = time.Millisecond, time.Millisecond
+	prevP, prevS := pgrepOutput, signalPID
+	t.Cleanup(func() {
+		devStackGracePeriod, devStackSupervisorGrace = og, os2
+		pgrepOutput, signalPID = prevP, prevS
+	})
+	i := 0
+	pgrepOutput = func() ([]byte, error) {
+		b := scans[min(i, len(scans)-1)]
+		i++
+		return b, nil
+	}
+	var mu sync.Mutex
+	recs := &[]sigRec{}
+	signalPID = func(pid int, sig syscall.Signal) error {
+		mu.Lock()
+		*recs = append(*recs, sigRec{pid, sig})
+		mu.Unlock()
+		return nil
+	}
+	return recs
+}
+
+func TestStopDevStackFor_SupervisorFirst(t *testing.T) {
+	const wt = "/Users/aaron/.argus/worktrees/proj/task"
+	pc := "100 process-compose -f " + wt + "/.devbox/virtenv/redis/process-compose.yaml\n"
+	my := "200 mysqld --datadir=" + wt + "/d\n"
+	// scan1: both; after the supervisor round the child survives; after the
+	// direct round everything is gone.
+	recs := stubStopSeams(t, [][]byte{[]byte(my + pc), []byte(my), nil})
+	stopDevStackFor(wt)
+	testutil.DeepEqual(t, *recs, []sigRec{{100, syscall.SIGTERM}, {200, syscall.SIGTERM}})
+}
+
+func TestStopDevStackFor_SupervisorSurvivesGetsKilledBeforeChildren(t *testing.T) {
+	const wt = "/Users/aaron/.argus/worktrees/proj/task"
+	pc := "100 process-compose -f " + wt + "/.devbox/virtenv/redis/process-compose.yaml\n"
+	my := "200 mysqld --datadir=" + wt + "/d\n"
+	// child listed first (lower pid order is not relied on); everything
+	// survives every round.
+	recs := stubStopSeams(t, [][]byte{[]byte(my + pc)})
+	stopDevStackFor(wt)
+	testutil.DeepEqual(t, *recs, []sigRec{
+		{100, syscall.SIGTERM},
+		{200, syscall.SIGTERM}, {100, syscall.SIGTERM},
+		{100, syscall.SIGKILL}, {200, syscall.SIGKILL},
+	})
+}
+
+func TestStopDevStack_ExportedWrapper(t *testing.T) {
+	recs := stubStopSeams(t, [][]byte{nil})
+	StopDevStack("/Users/aaron/.argus/worktrees/proj/task")
+	testutil.Equal(t, len(*recs), 0)
 }

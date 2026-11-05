@@ -557,6 +557,8 @@ It is strictly **read-only** (never touches a symlink, binary, `PATH`, or proces
 
 `doctor` also independently reports the `[secrets.op]` bootstrap-credential status — **RESOLVED** (`bootstrap_source` is configured and resolves), **NOT RESOLVED** (configured but the resolve failed — e.g. 1Password signed out or a renamed Keychain item), or **NOT CONFIGURED** (`[secrets]`/`[secrets.op]` absent, a no-op). The same tri-state is mirrored live in **Settings → System**. Like the checks above, it's purely advisory and never affects the exit code; the resolved credential value itself is never printed or logged, only the tri-state.
 
+`doctor` also lists dev stacks (see `[devstack]` below) still running in the worktree of a finished task — **FOUND**, **NONE FOUND**, or **UNKNOWN** (process scan or task lookup unavailable). Advisory only: it never affects the exit code and never stops anything.
+
 ### Auto-start at Login (macOS)
 
 Toggle from **Settings → Status → Auto-start at login** (Enter), or use the CLI:
@@ -1051,6 +1053,12 @@ Every option below is overridable. A ⚠️ marks options that are **read but no
 | `backend` | string | `"claude"` | Backend used for a new task when none is chosen in the New Task form. Must name a key under `[backends]`. |
 | `share_project` | string | `""` | Project preselected in the New Task form when the PWA share target (iOS/Android share sheet) lands a payload. Empty falls back to the currently expanded project folder. |
 | `permission_mode` | string | `"bypass-active"` | Permission flags injected into Claude-style backends at launch. One of `default`, `acceptEdits`, `plan`, `bypass-allow`, `bypass-active`. |
+
+#### `[devstack]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `stop_finished` | bool | `true` | The daemon stops the devbox dev stack (`mysqld`, `redis-server`, `postgres`, `caddy`, `process-compose`) left running in the Argus worktree of a `complete` or archived task with no live session, about a minute after it finishes. A task you deliberately resume is left alone, and a stack you start by hand in a finished task's worktree is stopped too. Set `false` to never touch them. Read live; no restart. |
 
 #### `[git]`
 

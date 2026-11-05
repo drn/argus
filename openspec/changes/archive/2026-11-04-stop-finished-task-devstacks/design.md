@@ -27,11 +27,11 @@ Verified findings (path:line against base `d44efd3c`):
 
 ### D1. Scan-driven sweeper, not session-driven
 
-Answers Q1. Stopping the stack next to `runner.Stop` in the reaper would miss tasks whose session exited first (the `daemon.go:540` path). Instead a daemon loop (`runDevStackReaper`, 60s tick) calls `ScanDevStackProcesses`, groups processes by worktree, resolves each worktree to a task via `db.Tasks()` (cleaned `Worktree` equality, exact, same prefix-sibling guard as today), and acts on finished tasks. Worktrees matching no task row are skipped (doctor reports those; orphan sweep owns them). Scan error -> log, skip tick (unknown, not none).
+Answers Q1. Stopping the stack next to `runner.Stop` in the reaper would miss tasks whose session exited first (the `daemon.go:540` path). Instead a daemon loop (`runDevStackReaper`, 10s tick, the same cadence as the session reaper so the resume signal in D3 is seen promptly; the process scan only runs when some worktree could qualify) calls `ScanDevStackProcesses`, groups processes by worktree, resolves each worktree to a task via `db.Tasks()` (cleaned `Worktree` equality, exact, same prefix-sibling guard as today), and acts on finished tasks. Worktrees matching no task row are skipped (doctor reports those; orphan sweep owns them). Scan error -> log, skip tick (unknown, not none).
 
 ### D2. Eligibility and grace
 
-A worktree's stack is stopped when, on two consecutive ticks: its task is `complete` or archived, `runner.HasSession` is false, and `HasPendingRestart` is false. The two-tick requirement gives a just-finished agent (or `hera_accept` check-in) time to wrap up and avoids racing a restart. Counters reset if any condition fails.
+A worktree's stack is stopped when, on six consecutive ticks (~60s): its task is `complete` or archived, it has no live session (`runner.Running()`, which includes a pending kick-restart), and it is not exempt. The grace gives a just-finished agent (or `hera_accept` check-in) time to wrap up and avoids racing a restart. Counters reset if any condition fails.
 
 ### D3. Deliberate-resume protection
 
@@ -55,7 +55,7 @@ Recommendation: yes, add an on/off setting, default ON. The sweeper kills proces
 
 ### D7. Doctor
 
-`gatherDevStackOrphans` gains a second classification: process maps to a task row whose task is `complete`/archived (any session state; doctor cannot see daemon memory) and reports it as "finished-task stack" with task name, separate from the "worktree gone" list. Advisory-only, never affects the exit code; read-only DB access through the existing doctor DB open path.
+`gatherFinishedStacks` is a second classification: process maps to a managed worktree (under `<DataDir>/worktrees/`) whose claimant task rows are ALL `complete`/archived (any session state; doctor cannot see daemon memory) and reports it as "finished-task stack" with task name; task rows come from a read-only DB open (`db.ReadTaskWorktreesReadOnly`, never migrates). A worktree claimed by an unfinished task is not flagged. Listed separately from the "worktree gone" list. Advisory-only, never affects the exit code.
 
 ### D8. Logging
 
@@ -71,7 +71,7 @@ If several task rows resolve to the same cleaned worktree path, the stack is sto
 
 ### D11. Hand-started stack in a finished task's worktree (guard 3 - for Aaron to rule on)
 
-A person who starts a dev stack by hand in the worktree of a `complete`/archived task, with no agent session, has it stopped after two consecutive ticks (~2 min). The sweeper cannot tell a hand-started stack from a leaked agent-started one: both are just processes under a finished task's worktree. Proposed: accept this. The protections are D3 (a resumed session exempts the task) and the off switch `devstack.stop_finished = false`. Detection alternatives (process start time vs task end time, controlling-terminal check) are fragile and are not proposed. Aaron to confirm accept-as-is.
+A person who starts a dev stack by hand in the worktree of a `complete`/archived task, with no agent session, has it stopped after about a minute (six consecutive ticks). The sweeper cannot tell a hand-started stack from a leaked agent-started one: both are just processes under a finished task's worktree. Proposed: accept this. The protections are D3 (a resumed session exempts the task) and the off switch `devstack.stop_finished = false`. Detection alternatives (process start time vs task end time, controlling-terminal check) are fragile and are not proposed. Aaron to confirm accept-as-is.
 
 ### D12. Verification of the process shapes
 
@@ -81,4 +81,4 @@ The two Oct 30 shapes (`devbox run -- mysqld --datadir=<wt>/tmp/mysql-data` and 
 
 - A user who starts a stack by hand on a finished task without resuming a session loses it (D11). Mitigated by the setting and D3.
 - Tighter matching could miss an odd wrapper (e.g. a custom launcher). Accepted: false negatives leak a stack, false positives kill an agent.
-- The 2-tick grace (~2 min) delays cleanup; acceptable.
+- The ~60s grace delays cleanup; acceptable.

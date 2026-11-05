@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -261,4 +263,17 @@ func TestBridgeConfig_DefaultEnabled(t *testing.T) {
 	if !DefaultConfig().Bridge.Enabled {
 		t.Error("Bridge.Enabled should default to true")
 	}
+}
+
+func TestDevStackConfig_DefaultOnAndTOMLOverride(t *testing.T) {
+	testutil.True(t, DefaultConfig().DevStack.StopFinished)
+
+	path := filepath.Join(t.TempDir(), FileName)
+	testutil.NoError(t, os.WriteFile(path, []byte("[devstack]\nstop_finished = false\n"), 0o600))
+	testutil.Equal(t, NewFileLoader(path).Apply(DefaultConfig()).DevStack.StopFinished, false)
+
+	// An unrelated file leaves the default on.
+	path2 := filepath.Join(t.TempDir(), FileName)
+	testutil.NoError(t, os.WriteFile(path2, []byte("[ui]\nshow_icons = true\n"), 0o600))
+	testutil.True(t, NewFileLoader(path2).Apply(DefaultConfig()).DevStack.StopFinished)
 }

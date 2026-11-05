@@ -1396,6 +1396,11 @@ func (d *Daemon) Serve(sockPath string) error {
 	// The first tick after startup clears the backlog.
 	go d.runFinishedSessionReaper()
 
+	// Finished-task dev-stack sweeper (stop-finished-task-devstacks). Stops the
+	// devbox dev stack left running in the managed worktree of a complete or
+	// archived task with no live session. Gated by devstack.stop_finished.
+	go d.runDevStackReaper()
+
 	// Codex usage probe (add-tiered-backend-routing). Sibling of the
 	// usage-budget probe above, same cadence, refreshing internal/backendtier's
 	// cached Codex usage for the general tiered backend resolver. Inactive by

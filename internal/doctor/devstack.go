@@ -72,3 +72,58 @@ func RenderDevStackOrphans(status DevStackOrphanStatus, orphans []DevStackOrphan
 	}
 	return b.String()
 }
+
+// FinishedStack is one running dev-stack process whose worktree belongs to
+// task rows that are all complete or archived (stop-finished-task-devstacks).
+type FinishedStack struct {
+	PID          int
+	Name         string
+	WorktreePath string
+	TaskName     string
+}
+
+// FinishedStackStatus classifies the finished-task dev-stack check. Advisory
+// only: it never affects argus doctor's exit code.
+type FinishedStackStatus int
+
+const (
+	// FinishedStackNone: the scan and task lookup ran and found nothing.
+	FinishedStackNone FinishedStackStatus = iota
+	// FinishedStackFound: one or more stacks run in finished tasks' worktrees.
+	FinishedStackFound
+	// FinishedStackUnknown: the process scan or the task lookup failed.
+	FinishedStackUnknown
+)
+
+// DiagnoseFinishedStacks classifies already-gathered candidates together with
+// the outcome of the scan and task lookup that produced them. Either error
+// degrades the result to Unknown: it cannot be judged, not assumed clean.
+func DiagnoseFinishedStacks(stacks []FinishedStack, err error) (FinishedStackStatus, []FinishedStack) {
+	if err != nil {
+		return FinishedStackUnknown, nil
+	}
+	if len(stacks) == 0 {
+		return FinishedStackNone, nil
+	}
+	return FinishedStackFound, stacks
+}
+
+// RenderFinishedStacks builds the doctor section for dev stacks running in
+// finished tasks' worktrees. Read-only: nothing it reports is signaled.
+func RenderFinishedStacks(status FinishedStackStatus, stacks []FinishedStack) string {
+	var b strings.Builder
+	b.WriteString("\nDev stacks of finished tasks: ")
+	switch status {
+	case FinishedStackFound:
+		fmt.Fprintf(&b, "FOUND (%d)\n", len(stacks))
+		for _, s := range stacks {
+			fmt.Fprintf(&b, "  pid %d  %s  %s (task %q is complete/archived)\n", s.PID, s.Name, s.WorktreePath, s.TaskName)
+		}
+		b.WriteString("\nThe daemon stops these automatically unless the task was deliberately resumed or\n[devstack] stop_finished = false in config.toml.\n")
+	case FinishedStackNone:
+		b.WriteString("NONE FOUND\n")
+	default:
+		b.WriteString("UNKNOWN (process scan or task lookup unavailable)\n")
+	}
+	return b.String()
+}
