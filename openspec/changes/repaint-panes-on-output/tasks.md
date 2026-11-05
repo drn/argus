@@ -13,8 +13,8 @@
 - [x] 2.1 Add `internal/latencyreport` with tests: parse `[typing]` lines, compute per-pane percentiles for all and quiet samples, count `no-echo`, filter by time range, and detect stall runs from goroutine dumps.
 - [x] 2.2 Add `cmd/argus-latency` with `report` (`--since`, `--until`, `--last`, `--log`) and `stalls` (`--addr`, `--duration`, `--interval`). Add its `main.go` to `coverage-ignore.txt` with the reason.
 - [x] 2.3 Run `make pre-pr`, commit the timing log and tool as their own commit, and push with `iris_push`.
-- [ ] 2.4 Follow "Before capture" and "Capture window" in `design.md`: build the baseline binary outside the repository, send `hera_send(status="blocked")` with its path, and wait. Do not use `iris_set_dogfood`, `iris_publish` or `iris_reload`.
-- [ ] 2.5 Complete the Before results in `measurements.md` and commit before opening the PR. Per the 2026-11-05 coordinator amendment, group 3 may proceed while the frozen v2 baseline awaits its remaining typing and busy CPU capture; Before and After will be measured back-to-back later.
+- [x] 2.4 Follow "Before capture" and "Capture window" in `design.md`: build the baseline binary outside the repository, send `hera_send(status="blocked")` with its path, and wait. Do not use `iris_set_dogfood`, `iris_publish` or `iris_reload`.
+- [x] 2.5 Complete the Before results in `measurements.md` and commit before opening the PR. Per the 2026-11-05 coordinator amendment, group 3 may proceed while the frozen v2 baseline awaits its remaining typing and busy CPU capture; Before and After will be measured back-to-back later.
 
 Baseline verification: `make pre-pr` was run in full; Go 1.26.8's 11 standard-library vulnerabilities stopped its advisory-in-CI `vuln` step. Per coordinator approval, build/vet/format/lint and the complete race/coverage gate were rerun on Go 1.26.8 with `GOFLAGS=-p=3` and inherited `CODEX_HOME`/`CODEX_SQLITE_HOME` removed so tests use fixture homes. All passed, with 0 lint issues and 88.9% filtered coverage. `openspec validate --all --strict` passed all 78 items. No repository toolchain setting changed.
 

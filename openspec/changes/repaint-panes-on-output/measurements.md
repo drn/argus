@@ -4,29 +4,78 @@
 
 Always choose **Skip** (or Esc) in a scratch binary's skew modal. Never select either restart action: during the first attempt, choosing **Restart supervisor** also repointed `~/.argus/argusd` at the temporary baseline binary, changing the shared deployment. The coordinator restored the daemon, supervisor and installed TUI to hotfix `2349aead` ([PR #1111](https://github.com/drn/argus/pull/1111)) before requesting a new Before capture; keep that deployment fixed through the replacement Before and After runs.
 
-## Before (replacement capture in progress)
+## Earlier idle measurements (09:31 PST)
 
 The replacement timing-only binary includes hotfix `2349aead` and was built at `c0ed1989` with Go 1.26.8. Its first observed timing line is 2026-11-05 09:30:58.505 PST. Both binaries and all capture files are under `/tmp/argus-paint-baseline-v2.CyRaje/`.
 
-This baseline is **incomplete**: busy CPU and the three-pane typing window are pending while Aaron is in meetings. On 2026-11-05 the coordinator authorized repaint implementation while the v2 baseline binary stays frozen; the remaining Before and After captures will run back-to-back later, with load and task count recorded for both.
+These idle measurements were collected while Aaron was in meetings. On 2026-11-05 the coordinator authorized repaint implementation while the v2 baseline binary stayed frozen; the later completed paired Before capture is recorded below, separately from this earlier two-task status snapshot.
 
 - **Machine snapshot at 09:31:55 PST:** uptime 17 days, 19:33; load 3.20 / 3.27 / 4.88. MCP reported 2 tasks with `in_progress` status, not a verified live-process count.
 - **Deployment:** daemon, supervisor and installed TUI were restored to `2349aead` by the coordinator before this capture. The worker made no process or deployment changes.
 - **Idle CPU:** request bounds 09:31:55–09:32:17 PST, with the keyboard hands-off while Aaron was in meetings; the screen content was not independently identified. The native profile reports duration 20.15s and 1.42s total CPU samples, or **7.05% of one core**. Text: `before-idle-cpu.txt`; raw: `pprof.argus-baseline.samples.cpu.001.pb.gz`.
 - **Idle stalls:** separate 30-second sampler, 09:32:39–09:33:09 PST, started after CPU profiling ended. It reports **30 runs**, median **14.977ms**, p90 **164.966ms**, maximum **240.040ms**, and **5.70%** stalled. Raw text: `before-stalls.txt`. As in the prescribed method, repeated goroutine dumps add overhead.
-- **Pending:** coordinator's `BUSY NOW` signal, busy 20-second CPU profile, completed Tasks/Hera coordinator/Hera worker typing, bounded final latency report and final capture end time. The interim report in `before-interim-report.txt` is retained but is not the final baseline table.
+- **Continuation:** busy CPU and three-pane typing were collected later in the paired Before window below. The earlier interim report in `before-interim-report.txt` is retained but is not the final baseline table.
 
 ## Paired capture procedure
 
-### Before progress (2026-11-05, end boundary pending)
+### Paired Before capture history (2026-11-05)
 
 - **Process/window:** the baseline v2 TUI started at 11:10:10.024 PST and successfully bound pprof port 6061. First timing sample: 11:10:11.528. Screen size recorded at startup: 212×52.
 - **Setup snapshot at 11:10:43:** uptime 17 days, 21:12; load 4.79 / 5.01 / 5.67. The session-state API reported 7 running and 5 idle; MCP separately reported 7 tasks with `in_progress` status.
 - **Busy CPU:** native profile starts at 11:12:41 PST, duration 20.04s, total samples 1.69s, **8.43% of one core**. Request began at 11:12:40. The session-state snapshot during profiling showed 7 running and 6 idle. Text is `paired-before-busy-cpu.txt`, raw profile `pprof.argus-baseline.samples.cpu.002.pb.gz`, both in the frozen v2 scratch directory.
 - **Known restart confound:** coordinator task `1793856717985375000` was stopped for width repair at 11:11:23.329, restarted at 11:11:23.778, and its pane re-resolved at 11:11:24.214. Samples overlapping that interruption must be excluded from final echo numbers.
-- **Reported resize:** the coordinator reported a terminal resize around 11:13–11:14. No additional `afterDraw resize` marker or actual restart was observed during the native CPU interval ending about 11:13:01; a fullscreen pane width change was logged earlier at 11:12:10. Exact resize exclusion bounds still need confirmation, and the final latency table is pending that filtering.
+- **Reported resize:** the coordinator reported a terminal resize around 11:13–11:14. No additional `afterDraw resize` marker or actual restart was observed during the native CPU interval ending about 11:13:01; a fullscreen pane width change was logged earlier at 11:12:10. The final typing table conservatively excludes the reported nominal range 11:13:00–11:14:00 despite the absence of an exact resize marker.
 - **Sample completeness:** the initial report bounded at the first busy signal (11:12:15) had only 59 coordinator samples and none for Tasks or the worker pane. A later open-window snapshot has 344 Tasks and 175 coordinator samples, still no worker samples. These are unfiltered interim counts, not a completed three-pane baseline. Paste/dictation is not counted by key timing; the coordinator was notified that manual-key coverage remains incomplete.
-- **Preservation:** raw typing metadata is saved as `paired-typing-snapshot.txt`; interim reports as `paired-before-report-raw.txt` and `paired-before-report-interim.txt`. `BEFORE DONE`, final exclusion bounds, the final report, and all After measurements remain pending.
+- **Preservation:** raw typing metadata is saved as `paired-typing-snapshot.txt`; interim reports as `paired-before-report-raw.txt` and `paired-before-report-interim.txt`. The coordinator subsequently set `BEFORE DONE` at 12:07:00; the final report below supersedes these interim counts. After measurements remain pending.
+
+### Before (final)
+
+- **Window:** 2026-11-05 11:10:11 through 12:07:00 PST, inclusive; binary frozen at `c0ed1989`, including deployed hotfix `2349aead`.
+- **Samples:** 1,029 raw, 957 retained: Tasks 437, coordinator 229, worker 291. All three retained populations exceed 200; `no-echo=0` in every pane.
+- **Exclusions:** key-to-flush interval overlap is calculated from the log timestamp minus `total_ms`. The reported global resize interval 11:13:00–11:14:00 removes 70 coordinator and 2 Tasks samples. Three task-specific width-repair intervals remove zero overlapping samples: coordinator 11:11:23.329–11:11:24.214; Tasks session `1793901924745179000` 11:48:46.440–11:48:47.230 (stream reconnected); coordinator 12:04:01.855–12:04:02.978. No sample is excluded merely for being slow.
+- **CPU and load:** busy CPU is 8.43% of one core over 20.04s at 11:12:41, with 7 running sessions. Setup load was 4.79 / 5.01 / 5.67. The earlier idle CPU 7.05% and idle stall window above are separate context, taken earlier with a smaller fleet.
+- **Evidence:** `paired-before-typing-final.txt`, `paired-before-typing-clean.txt`, `paired-before-exclusions.json`, `filter-before.py` and `paired-before-report-clean.txt` in the v2 scratch directory. The final table is generated from the filtered metadata with the existing report command.
+
+All table values are milliseconds; `n` is the number of retained samples. Quiet means at least 50ms of prior quiet and no overlapping pending key.
+
+| Pane | Population | Metric | n | p50 | p90 | p99 | Max |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| hera-agent | all | total_ms | 291 | 6.818 | 37.557 | 225.128 | 290.391 |
+| hera-agent | all | queue_ms | 291 | 0.019 | 7.591 | 204.938 | 238.652 |
+| hera-agent | all | arrive_ms | 291 | 0.978 | 3.081 | 35.247 | 36.379 |
+| hera-agent | all | paint_ms | 291 | 5.694 | 13.031 | 56.561 | 66.676 |
+| hera-agent | all | stall_ms | 291 | 0.000 | 0.000 | 196.220 | 210.844 |
+| hera-agent | all | quiet_ms | 291 | 19.408 | 76.462 | 489.928 | 23638.063 |
+| hera-agent | quiet | total_ms | 47 | 7.290 | 23.249 | 259.975 | 259.975 |
+| hera-agent | quiet | queue_ms | 47 | 0.019 | 1.171 | 238.652 | 238.652 |
+| hera-agent | quiet | arrive_ms | 47 | 1.017 | 2.529 | 8.291 | 8.291 |
+| hera-agent | quiet | paint_ms | 47 | 6.070 | 17.718 | 47.712 | 47.712 |
+| hera-agent | quiet | stall_ms | 47 | 0.000 | 0.000 | 210.844 | 210.844 |
+| hera-agent | quiet | quiet_ms | 47 | 96.995 | 279.037 | 23638.063 | 23638.063 |
+| hera-coord | all | total_ms | 229 | 52.315 | 92.766 | 644.132 | 1936.830 |
+| hera-coord | all | queue_ms | 229 | 0.018 | 2.441 | 211.689 | 251.295 |
+| hera-coord | all | arrive_ms | 229 | 3.151 | 4.915 | 587.158 | 1904.445 |
+| hera-coord | all | paint_ms | 229 | 42.491 | 79.498 | 96.571 | 97.801 |
+| hera-coord | all | stall_ms | 229 | 0.000 | 0.000 | 203.998 | 239.847 |
+| hera-coord | all | quiet_ms | 229 | 77.810 | 240.220 | 6386.433 | 19475.520 |
+| hera-coord | quiet | total_ms | 152 | 53.725 | 92.766 | 644.132 | 1936.830 |
+| hera-coord | quiet | queue_ms | 152 | 0.019 | 0.886 | 216.040 | 251.295 |
+| hera-coord | quiet | arrive_ms | 152 | 3.191 | 5.025 | 587.158 | 1904.445 |
+| hera-coord | quiet | paint_ms | 152 | 48.155 | 77.637 | 96.571 | 97.801 |
+| hera-coord | quiet | stall_ms | 152 | 0.000 | 0.000 | 205.055 | 239.847 |
+| hera-coord | quiet | quiet_ms | 152 | 98.269 | 297.741 | 8695.441 | 19475.520 |
+| tasks | all | total_ms | 437 | 20.670 | 21.339 | 38.498 | 180.122 |
+| tasks | all | queue_ms | 437 | 0.009 | 0.026 | 7.155 | 21.921 |
+| tasks | all | arrive_ms | 437 | 1.968 | 2.362 | 4.260 | 27.918 |
+| tasks | all | paint_ms | 437 | 18.553 | 19.172 | 21.303 | 152.185 |
+| tasks | all | stall_ms | 437 | 0.000 | 0.000 | 15.335 | 27.549 |
+| tasks | all | quiet_ms | 437 | 98.068 | 276.569 | 2797.115 | 945140.315 |
+| tasks | quiet | total_ms | 370 | 20.692 | 21.339 | 38.498 | 180.122 |
+| tasks | quiet | queue_ms | 370 | 0.009 | 0.022 | 6.239 | 21.921 |
+| tasks | quiet | arrive_ms | 370 | 1.974 | 2.380 | 4.302 | 27.918 |
+| tasks | quiet | paint_ms | 370 | 18.545 | 19.172 | 24.822 | 152.185 |
+| tasks | quiet | stall_ms | 370 | 0.000 | 0.000 | 16.128 | 27.549 |
+| tasks | quiet | quiet_ms | 370 | 110.967 | 354.015 | 3847.254 | 945140.315 |
 
 ### Operator steps
 
