@@ -183,6 +183,12 @@ func TestRemoveWorktree_StopsDevStackBeforeRemoval(t *testing.T) {
 	origGrace := devStackGracePeriod
 	devStackGracePeriod = time.Millisecond
 	t.Cleanup(func() { devStackGracePeriod = origGrace })
+	prevPs, prevSleep := psCommand, devStackSleep
+	t.Cleanup(func() { psCommand, devStackSleep = prevPs, prevSleep })
+	psCommand = func(int) (string, error) {
+		return "process-compose -f " + wtPath + "/.devbox/virtenv/redis/process-compose.yaml", nil
+	}
+	devStackSleep = func(time.Duration, <-chan struct{}) bool { return true }
 
 	RemoveWorktree(wtPath, repoDir)
 

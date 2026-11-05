@@ -19,6 +19,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/doctor"
 	"github.com/drn/argus/internal/hostsleep"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/review"
 	"github.com/drn/argus/internal/uxlog"
@@ -43,6 +44,7 @@ func runDoctor() {
 	fmt.Print(doctor.RenderProfileLibrary(gatherProfileLibraryStatus()))
 	fmt.Print(doctor.RenderSecretsBootstrap(gatherSecretsBootstrapStatus()))
 	fmt.Print(doctor.RenderDevStackOrphans(gatherDevStackOrphans()))
+	fmt.Print(doctor.RenderFinishedStacks(gatherFinishedStacks()))
 	fmt.Print(doctor.RenderHostSleep(gatherHostSleep()))
 	if doctor.Diagnose(actors).Verdict != doctor.Healthy {
 		os.Exit(1)
@@ -361,6 +363,72 @@ func diagnoseDevStackOrphansFrom(procs []agent.DevStackProc, scanErr error, exis
 		}
 	}
 	return doctor.DiagnoseDevStackOrphans(orphans, nil)
+}
+
+// gatherFinishedStacks scans for dev-stack processes and maps each to its task
+// row via a read-only DB open. Read-only: never signals a reported process.
+func gatherFinishedStacks() (doctor.FinishedStackStatus, []doctor.FinishedStack) {
+	return gatherFinishedStacksFrom(agent.ScanDevStackProcesses,
+		func() ([]db.TaskWorktreeRow, error) { return db.ReadTaskWorktreesReadOnly(db.DefaultPath()) },
+		filepath.Join(db.DataDir(), "worktrees"))
+}
+
+// gatherFinishedStacksFrom is gatherFinishedStacks with the process scan and
+// the task-row read injected. The rows are read only when the scan found at
+// least one dev-stack process.
+func gatherFinishedStacksFrom(scan func() ([]agent.DevStackProc, error), readRows func() ([]db.TaskWorktreeRow, error), root string) (doctor.FinishedStackStatus, []doctor.FinishedStack) {
+	procs, err := scan()
+	var rows []db.TaskWorktreeRow
+	if err == nil && len(procs) > 0 {
+		rows, err = readRows()
+	}
+	return classifyFinishedStacksFrom(procs, rows, err, root)
+}
+
+// classifyFinishedStacksFrom flags each scanned process whose worktree lies in
+// the managed worktree dir and whose claimant task rows are ALL complete or
+// archived — the same eligibility the daemon sweeper applies, minus session
+// state, which only the daemon can see. Pure: scan and rows are injected.
+func classifyFinishedStacksFrom(procs []agent.DevStackProc, rows []db.TaskWorktreeRow, err error, root string) (doctor.FinishedStackStatus, []doctor.FinishedStack) {
+	if err != nil {
+		return doctor.DiagnoseFinishedStacks(nil, err)
+	}
+	type claim struct {
+		name       string
+		allDone    bool
+		anyClaimed bool
+	}
+	claims := map[string]*claim{}
+	for _, r := range rows {
+		wt := filepath.Clean(r.Worktree)
+		c := claims[wt]
+		if c == nil {
+			c = &claim{name: r.Name, allDone: true}
+			claims[wt] = c
+		}
+		c.anyClaimed = true
+		if r.Status != model.StatusComplete && !r.Archived {
+			c.allDone = false
+		}
+	}
+	var out []doctor.FinishedStack
+	for _, p := range procs {
+		c := claims[p.WorktreePath]
+		if c == nil || !c.allDone || !pathUnder(root, p.WorktreePath) {
+			continue
+		}
+		out = append(out, doctor.FinishedStack{PID: p.PID, Name: p.Name, WorktreePath: p.WorktreePath, TaskName: c.name})
+	}
+	return doctor.DiagnoseFinishedStacks(out, nil)
+}
+
+// pathUnder reports whether path is a <project>/<task> directory below root.
+func pathUnder(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return strings.Contains(rel, string(filepath.Separator))
 }
 
 // readStopHookCommands reads and parses the Claude Code settings file at

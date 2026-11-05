@@ -2,6 +2,8 @@ package db
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -276,4 +278,48 @@ func TestDB_FindByNameProject(t *testing.T) {
 	got, err = d.FindByNameProject("stacked-m1", "proj")
 	testutil.NoError(t, err)
 	testutil.Nil(t, got)
+}
+
+func TestReadTaskWorktreesReadOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.sql")
+
+	// Missing file: no rows, no error, and the file is not created.
+	rows, err := ReadTaskWorktreesReadOnly(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(rows), 0)
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Fatal("read-only open must not create the database")
+	}
+
+	d, err := Open(path)
+	testutil.NoError(t, err)
+	done := &model.Task{ID: "a", Name: "alpha", Status: model.StatusComplete, Worktree: "/w/a"}
+	arch := &model.Task{ID: "b", Name: "beta", Status: model.StatusInReview, Worktree: "/w/b"}
+	none := &model.Task{ID: "c", Name: "gamma", Status: model.StatusPending}
+	for _, tk := range []*model.Task{done, arch, none} {
+		testutil.NoError(t, d.Add(tk))
+	}
+	testutil.NoError(t, d.SetArchived("b", true))
+	testutil.NoError(t, d.Close())
+
+	rows, err = ReadTaskWorktreesReadOnly(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(rows), 2) // the worktree-less row is excluded
+	byID := map[string]TaskWorktreeRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	testutil.Equal(t, byID["a"].Status, model.StatusComplete)
+	testutil.Equal(t, byID["a"].Name, "alpha")
+	testutil.True(t, !byID["a"].Archived)
+	testutil.True(t, byID["b"].Archived)
+	testutil.Equal(t, byID["b"].Worktree, "/w/b")
+}
+
+func TestReadTaskWorktreesReadOnly_BadFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.sql")
+	testutil.NoError(t, os.WriteFile(path, []byte("not a sqlite db"), 0o600))
+	if _, err := ReadTaskWorktreesReadOnly(path); err == nil {
+		t.Fatal("expected an error for a non-sqlite file")
+	}
 }

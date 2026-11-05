@@ -434,11 +434,19 @@ func (c *Client) ClipboardClear(taskID string) error {
 	return nil
 }
 
-// Running returns task IDs of running sessions.
+// Running returns task IDs of running sessions (nil on an RPC error — use
+// RunningChecked when "no sessions" and "could not ask" must differ).
 func (c *Client) Running() []string {
+	ids, _ := c.RunningChecked()
+	return ids
+}
+
+// RunningChecked is Running that reports the RPC error instead of folding it
+// into an empty list.
+func (c *Client) RunningChecked() ([]string, error) {
 	var resp daemon.ListResp
 	if err := c.call("Daemon.ListSessions", &daemon.Empty{}, &resp); err != nil {
-		return nil
+		return nil, err
 	}
 	ids := make([]string, 0, len(resp.Sessions))
 	for _, s := range resp.Sessions {
@@ -446,7 +454,7 @@ func (c *Client) Running() []string {
 			ids = append(ids, s.TaskID)
 		}
 	}
-	return ids
+	return ids, nil
 }
 
 // Idle returns task IDs of idle sessions.

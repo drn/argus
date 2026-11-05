@@ -144,9 +144,14 @@ func (e ExitInfo) CleanExit() bool {
 // mutex, exactly as before the extraction.
 type Daemon struct {
 	*sessionCore
-	db                 *db.DB
-	listener           net.Listener
-	done               chan struct{}
+	db       *db.DB
+	listener net.Listener
+	done     chan struct{}
+
+	// devStackScan / devStackStop override the dev-stack sweeper's process scan
+	// and stop (nil = the real agent functions). Test seams, set before Serve.
+	devStackScan       func() ([]agent.DevStackProc, error)
+	devStackStop       func(worktree string, o agent.StopOptions)
 	shutdownOnce       sync.Once     // closes done exactly once across concurrent Shutdown callers
 	ready              chan struct{} // closed when Serve has set listener (or failed)
 	sockPath           string        // set by Serve, used by cleanup
@@ -1395,6 +1400,11 @@ func (d *Daemon) Serve(sockPath string) error {
 	// servers it holds, e.g. Playwright MCP) lives until a supervisor restart.
 	// The first tick after startup clears the backlog.
 	go d.runFinishedSessionReaper()
+
+	// Finished-task dev-stack sweeper (stop-finished-task-devstacks). Stops the
+	// devbox dev stack left running in the managed worktree of a complete or
+	// archived task with no live session. Gated by devstack.stop_finished.
+	go d.runDevStackReaper()
 
 	// Codex usage probe (add-tiered-backend-routing). Sibling of the
 	// usage-budget probe above, same cadence, refreshing internal/backendtier's

@@ -996,3 +996,29 @@ func TestC_ConnectPfxFail(t *testing.T) {
 	// On macOS, the close race may make this succeed — accept either result.
 	_ = err
 }
+
+// TestC_RunningChecked pins that an RPC failure is an error, not an empty
+// session list: the dev-stack sweeper must skip its tick on one rather than
+// read "no sessions".
+func TestC_RunningChecked(t *testing.T) {
+	_, sockPath, _ := testSetup(t)
+	c, err := Connect(sockPath)
+	testutil.NoError(t, err)
+
+	ids, err := c.RunningChecked()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(ids), 0)
+
+	_ = c.rpc.Close()
+	ids, err = c.RunningChecked()
+	if err == nil {
+		t.Fatal("RunningChecked must report the RPC error")
+	}
+	testutil.Nil(t, ids)
+	testutil.Nil(t, c.Running()) // the lossy variant still folds the error to nil
+}
+
+// The dev-stack sweeper picks the error-reporting path by this interface; if
+// Client.RunningChecked is renamed or its signature changes, this stops
+// compiling instead of silently reverting to "RPC failure reads as no sessions".
+var _ daemon.RunningChecker = (*Client)(nil)

@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/doctor"
 	"github.com/drn/argus/internal/hostsleep"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -304,4 +305,69 @@ func TestGatherHostSleep_ReadsDBAndConfigOverride(t *testing.T) {
 	enabled, report := gatherHostSleep()
 	testutil.False(t, enabled)
 	testutil.Equal(t, report.Status, hostsleep.NotApplicable)
+}
+
+func TestClassifyFinishedStacksFrom(t *testing.T) {
+	const root = "/h/.argus/worktrees"
+	proc := func(pid int, wt string) agent.DevStackProc {
+		return agent.DevStackProc{PID: pid, Name: "mysqld", WorktreePath: wt}
+	}
+	row := func(name, wt string, st model.Status, archived bool) db.TaskWorktreeRow {
+		return db.TaskWorktreeRow{ID: name, Name: name, Worktree: wt, Status: st, Archived: archived}
+	}
+	rows := []db.TaskWorktreeRow{
+		row("done", root+"/p/done", model.StatusComplete, false),
+		row("arch", root+"/p/arch", model.StatusInReview, true),
+		row("live", root+"/p/live", model.StatusInProgress, false),
+		row("shared-a", root+"/p/shared", model.StatusComplete, false),
+		row("shared-b", root+"/p/shared", model.StatusInProgress, false),
+		row("main", "/h/dev/sketch", model.StatusComplete, false),
+	}
+	procs := []agent.DevStackProc{
+		proc(1, root+"/p/done"), proc(2, root+"/p/arch"), proc(3, root+"/p/live"),
+		proc(4, root+"/p/shared"), proc(5, "/h/dev/sketch"), proc(6, root+"/p/norow"),
+	}
+	status, got := classifyFinishedStacksFrom(procs, rows, nil, root)
+	testutil.Equal(t, status, doctor.FinishedStackFound)
+	testutil.Equal(t, len(got), 2)
+	testutil.Equal(t, got[0].PID, 1)
+	testutil.Equal(t, got[0].TaskName, "done")
+	testutil.Equal(t, got[1].PID, 2)
+
+	status, got = classifyFinishedStacksFrom(procs[2:3], rows, nil, root)
+	testutil.Equal(t, status, doctor.FinishedStackNone)
+	testutil.Equal(t, len(got), 0)
+
+	status, _ = classifyFinishedStacksFrom(procs, rows, errors.New("scan failed"), root)
+	testutil.Equal(t, status, doctor.FinishedStackUnknown)
+}
+
+func TestPathUnder(t *testing.T) {
+	testutil.True(t, pathUnder("/r", "/r/p/t"))
+	testutil.True(t, !pathUnder("/r", "/r"))
+	testutil.True(t, !pathUnder("/r", "/r/p"))
+	testutil.True(t, !pathUnder("/r", "/x/p/t"))
+	testutil.True(t, !pathUnder("/r", "/r-evil/p/t"))
+}
+
+func TestGatherFinishedStacksFrom(t *testing.T) {
+	const root = "/h/.argus/worktrees"
+	proc := agent.DevStackProc{PID: 9, Name: "mysqld", WorktreePath: root + "/p/t"}
+	rows := []db.TaskWorktreeRow{{ID: "x", Name: "x", Worktree: root + "/p/t", Status: model.StatusComplete}}
+	readRows := func() ([]db.TaskWorktreeRow, error) { return rows, nil }
+	neverRead := func() ([]db.TaskWorktreeRow, error) { t.Fatal("rows read without a scanned process"); return nil, nil }
+
+	status, got := gatherFinishedStacksFrom(func() ([]agent.DevStackProc, error) { return []agent.DevStackProc{proc}, nil }, readRows, root)
+	testutil.Equal(t, status, doctor.FinishedStackFound)
+	testutil.Equal(t, len(got), 1)
+
+	status, _ = gatherFinishedStacksFrom(func() ([]agent.DevStackProc, error) { return nil, nil }, neverRead, root)
+	testutil.Equal(t, status, doctor.FinishedStackNone)
+
+	status, _ = gatherFinishedStacksFrom(func() ([]agent.DevStackProc, error) { return nil, errors.New("no pgrep") }, neverRead, root)
+	testutil.Equal(t, status, doctor.FinishedStackUnknown)
+
+	status, _ = gatherFinishedStacksFrom(func() ([]agent.DevStackProc, error) { return []agent.DevStackProc{proc}, nil },
+		func() ([]db.TaskWorktreeRow, error) { return nil, errors.New("db locked") }, root)
+	testutil.Equal(t, status, doctor.FinishedStackUnknown)
 }

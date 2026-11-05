@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -86,6 +88,34 @@ func (d *DB) Tasks() ([]*model.Task, error) {
 		if t, err := scanTask(rows); err == nil {
 			tasks = append(tasks, t)
 		}
+	}
+	return tasks, nil
+}
+
+// TasksChecked is Tasks for callers that act destructively on the result: a
+// row that fails to scan, or an iteration error, is returned as an error
+// instead of being silently dropped. A partial list can lose an unfinished
+// task and make its shared worktree look finished.
+func (d *DB) TasksChecked() ([]*model.Task, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("query tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*model.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan task: %w", err)
+		}
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tasks: %w", err)
 	}
 	return tasks, nil
 }
@@ -762,4 +792,46 @@ func (d *DB) SetTaskAccount(id, account string, routed bool) error {
 		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
 	}
 	return nil
+}
+
+// TaskWorktreeRow is the minimal task projection `argus doctor` needs to map a
+// running dev-stack process back to its task.
+type TaskWorktreeRow struct {
+	ID       string
+	Name     string
+	Worktree string
+	Status   model.Status
+	Archived bool
+}
+
+// ReadTaskWorktreesReadOnly lists every task row that has a worktree via a
+// read-only open of the database at path (never migrates or writes). A missing
+// file yields no rows and no error.
+func ReadTaskWorktreesReadOnly(path string) ([]TaskWorktreeRow, error) {
+	if _, statErr := os.Stat(path); statErr != nil {
+		return nil, nil
+	}
+	conn, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path}).String()+"?mode=ro&_pragma=busy_timeout(2000)")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	rows, err := conn.Query(`SELECT id, name, status, archived, worktree FROM tasks WHERE worktree != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TaskWorktreeRow
+	for rows.Next() {
+		var r TaskWorktreeRow
+		var status string
+		var archived int
+		if err := rows.Scan(&r.ID, &r.Name, &status, &archived, &r.Worktree); err != nil {
+			return nil, err
+		}
+		r.Status, _ = model.ParseStatus(status)
+		r.Archived = archived != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

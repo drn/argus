@@ -80,3 +80,28 @@ func TestRenderDevStackOrphans(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnoseFinishedStacks(t *testing.T) {
+	st, got := DiagnoseFinishedStacks(nil, nil)
+	testutil.Equal(t, st, FinishedStackNone)
+	testutil.Equal(t, len(got), 0)
+
+	in := []FinishedStack{{PID: 1, Name: "mysqld", WorktreePath: "/w", TaskName: "t"}}
+	st, got = DiagnoseFinishedStacks(in, nil)
+	testutil.Equal(t, st, FinishedStackFound)
+	testutil.Equal(t, len(got), 1)
+
+	st, got = DiagnoseFinishedStacks(in, errors.New("boom"))
+	testutil.Equal(t, st, FinishedStackUnknown)
+	testutil.Equal(t, len(got), 0)
+}
+
+func TestRenderFinishedStacks(t *testing.T) {
+	out := RenderFinishedStacks(FinishedStackFound, []FinishedStack{{PID: 7, Name: "mysqld", WorktreePath: "/w/x", TaskName: "alpha"}})
+	testutil.Contains(t, out, "FOUND (1)")
+	testutil.Contains(t, out, "pid 7  mysqld  /w/x")
+	testutil.Contains(t, out, `task "alpha"`)
+	testutil.Contains(t, out, "stop_finished")
+	testutil.Contains(t, RenderFinishedStacks(FinishedStackNone, nil), "NONE FOUND")
+	testutil.Contains(t, RenderFinishedStacks(FinishedStackUnknown, nil), "UNKNOWN")
+}
