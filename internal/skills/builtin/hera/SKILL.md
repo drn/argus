@@ -118,7 +118,7 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
     panel. "The task is important" or "I'm on Claude" is not such a need. The spawn result reports
     `backend: <name> (routed)` or `(explicit override)` so you can see what the worker got.
   - `model` — optional per-worker model override, valid only for the worker's resolved backend (claude:
-    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode/antigravity/cursor: their configured ids).
+    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode/antigravity/cursor/omp: their configured ids).
     Since routing usually picks the backend, a backend-specific model (e.g. `opus`) is silently dropped
     when the worker lands elsewhere. Pass `archetype=` instead and let the profile pick the tier for
     whichever backend the worker gets.

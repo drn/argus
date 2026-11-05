@@ -6,27 +6,27 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 
 ## Capability matrix
 
-| | claude | codex | pi | opencode | antigravity | cursor | custom |
-|---|---|---|---|---|---|---|---|
-| Binaries | `claude` | `codex` | `pi` | `opencode` | `agy` | `cursor-agent` | anything else |
-| Session ID | pinned `--session-id` | captured | captured | captured | captured | captured | pinned |
-| Resume | `--resume <id>` | `codex resume <id>` (replaces cmd) | `--session <id>` | `--session <id>` | `--conversation <id>` | `--resume <id>` | `--resume <id>` |
-| Capture source | `~/.claude/projects/<enc>/*.jsonl` | `state_5.sqlite` `threads.cwd` | `~/.pi/agent/sessions/--<enc>--/` | `opencode.db` `session[_v2].directory` | `~/.gemini/antigravity-cli/conversation_summaries.db` `workspace_uris` | `~/.cursor/chats/<md5(cwd)>/<uuid>/` newest mtime | — |
-| Recapture | every exit + resume refresh | once | once | once | every exit + resume refresh | once | never |
-| Resume availability | exact account transcript | — | — | — | — | — | — |
-| Prompt | `-- <p>` | `-- <p>` | positional | `--prompt` (config) | `--prompt-interactive` (family default) | `-- <p>` | `-- <p>` |
-| Model | `--model` (curated aliases) | `--model` (curated) | `--model` | `OPENCODE_CONFIG_CONTENT` | `--model` (custom only) | `--model` (custom only) | none |
-| Permission | `defaults.permission_mode` → `--permission-mode …` | baked into command | — | `--auto` launch flag | mode → `--mode …` / `--dangerously-skip-permissions` | mode → `--force` / `--plan` | — |
-| MCP | `--mcp-config` per launch | `-c mcp_servers.argus.url` per launch | — | global `opencode.json` | global `~/.gemini/config/mcp_config.json` | global `~/.cursor/mcp.json` (+`--approve-mcps` in command) | — |
-| Skills | `--add-dir ~/.argus/skills` | Argus-only `CODEX_HOME` overlay | `--skill <dir>` | `OPENCODE_CONFIG_CONTENT` | global `~/.gemini/config/skills.json` entry | — | — |
-| Routing | `--append-system-prompt-file` | `AGENTS.md` in the Argus-only `CODEX_HOME` overlay | `--append-system-prompt <file>` | `instructions` in `OPENCODE_CONFIG_CONTENT` | always-on global rule `~/.gemini/config/rules/argus-routing.md` | — (no native mechanism; see gotchas) | — |
-| Sandbox grant | `~/.claude.json*`, `~/.claude` | `~/.codex`, codex-home | `~/.pi` | (base `~/.local`) | `~/.gemini/{antigravity-cli,config,jetski}` (pre-created) | `~/.cursor/{chats,projects,statsig-cache.json}` (launch-only, pre-created; mcp.json/cli-config.json read-only) | — |
-| Accounts | `claude_config_dir` | `codex_home` | — | — | — | — | — |
-| Launch flag | — | — | — | `--auto` | — | `--trust` | — |
-| Session switcher | yes | — | — | — | — | — | yes |
-| Bridge mod | `--plugin-dir` | — | — | — | — | — | — |
-| Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — | — |
-| Cost source | Stop hook + bridge mod | daemon rollout sweeper | — (n/a) | — (n/a) | — (n/a) | — (n/a) | Stop hook |
+| | claude | codex | pi | opencode | antigravity | cursor | omp | custom |
+|---|---|---|---|---|---|---|---|---|
+| Binaries | `claude` | `codex` | `pi` | `opencode` | `agy` | `cursor-agent` | `omp` | anything else |
+| Session ID | pinned `--session-id` | captured | captured | captured | captured | captured | captured | pinned |
+| Resume | `--resume <id>` | `codex resume <id>` (replaces cmd) | `--session <id>` | `--session <id>` | `--conversation <id>` | `--resume <id>` | `--resume <id>` | `--resume <id>` |
+| Capture source | `~/.claude/projects/<enc>/*.jsonl` | `state_5.sqlite` `threads.cwd` | `~/.pi/agent/sessions/--<enc>--/` | `opencode.db` `session[_v2].directory` | `~/.gemini/antigravity-cli/conversation_summaries.db` `workspace_uris` | `~/.cursor/chats/<md5(cwd)>/<uuid>/` newest mtime | `~/.omp/agent/sessions/<-rel-under-HOME \| -tmp-rel \| --abs-->/<ts>_<uuid>.jsonl` | — |
+| Recapture | every exit + resume refresh | once | once | once | every exit + resume refresh | once | every exit + resume refresh | never |
+| Resume availability | exact account transcript | — | — | — | — | — | — | — |
+| Prompt | `-- <p>` | `-- <p>` | positional | `--prompt` (config) | `--prompt-interactive` (family default) | `-- <p>` | `-- <p>` | `-- <p>` |
+| Model | `--model` (curated aliases) | `--model` (curated) | `--model` | `OPENCODE_CONFIG_CONTENT` | `--model` (custom only) | `--model` (custom only) | `--model` (fuzzy) | none |
+| Permission | `defaults.permission_mode` → `--permission-mode …` | baked into command | — | `--auto` launch flag | mode → `--mode …` / `--dangerously-skip-permissions` | mode → `--force` / `--plan` | mode → `--approval-mode write/always-ask/yolo` | — |
+| MCP | `--mcp-config` per launch | `-c mcp_servers.argus.url` per launch | — | global `opencode.json` | global `~/.gemini/config/mcp_config.json` | global `~/.cursor/mcp.json` (+`--approve-mcps` in command) | `--plugin-dir` generated Claude-style plugin (`.mcp.json`) per launch | — |
+| Skills | `--add-dir ~/.argus/skills` | Argus-only `CODEX_HOME` overlay | `--skill <dir>` | `OPENCODE_CONFIG_CONTENT` | global `~/.gemini/config/skills.json` entry | — | `--config` overlay (`skills.customDirectories`) | — |
+| Routing | `--append-system-prompt-file` | `AGENTS.md` in the Argus-only `CODEX_HOME` overlay | `--append-system-prompt <file>` | `instructions` in `OPENCODE_CONFIG_CONTENT` | always-on global rule `~/.gemini/config/rules/argus-routing.md` | — (no native mechanism; see gotchas) | `--append-system-prompt <file>` | — |
+| Sandbox grant | `~/.claude.json*`, `~/.claude` | `~/.codex`, codex-home | `~/.pi` | (base `~/.local`) | `~/.gemini/{antigravity-cli,config,jetski}` (pre-created) | `~/.cursor/{chats,projects,statsig-cache.json}` (launch-only, pre-created; mcp.json/cli-config.json read-only) | `~/.omp` (launch-only) | — |
+| Accounts | `claude_config_dir` | `codex_home` | — | — | — | — | — | — |
+| Launch flag | — | — | — | `--auto` | — | `--trust` | — | — |
+| Session switcher | yes | — | — | — | — | — | — | yes |
+| Bridge mod | `--plugin-dir` | — | — | — | — | — | — | — |
+| Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — | — | — |
+| Cost source | Stop hook + bridge mod | daemon rollout sweeper | — (n/a) | — (n/a) | — (n/a) | — (n/a) | — (n/a) | Stop hook |
 
 Rows map to `Family` fields: Session ID → `PinsSessionID`, Resume → `ResumeFlag`/`ResumeCmd`,
 Capture → `Capture`, Recapture → `RecaptureEveryExit`, Resume availability → `ResumeAvailable`, Prompt → `DefaultPromptFlag`/
@@ -70,3 +70,7 @@ Prelaunch → `Prelaunch`/`StartTimeout`, Bridge mod → `BridgeMod`, Cost sourc
   and before each launch; `--approve-mcps` lives in the default command, not the family, so a user who
   strips it still gets the prompt. `--trust` is the family LaunchFlag.
 - **Only `agy` classifies as antigravity** — a bare `antigravity` may be the IDE launcher.
+- **omp gets MCP through a plugin, not a flag.** omp has no MCP flag/env, but loads Claude-style plugins from `--plugin-dir` and their `.mcp.json` servers (shown as `argus:argus`). The plugin is content-addressed by URL under `~/.argus/cache/omp-mcp/<hash>/`, so a port change yields a new dir and nothing global is written.
+- **omp's session dir is home-relative, not Pi's `--abs--`.** omp names it `-tmp-<rel>` under `os.tmpdir()`, else `-<rel>` under `$HOME`, else Pi's `--<abs>--`, on realpaths (`Si` in the omp bundle). Worktrees live under `~/.argus`, so `-.argus-worktrees-…` is the live case; capture also tries `--abs--` (omp migrates legacy dirs into the new name).
+- **omp recaptures every exit** because `/new` starts a new session file in the same dir.
+- **omp's `~/.omp` grant is whole-dir but launch-only**: state (WAL DBs, sessions, logs, run, locks) is spread across `~/.omp/agent`, which also holds `mcp.json`/`config.yml`, so other backends' agents never get the grant.

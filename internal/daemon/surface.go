@@ -188,7 +188,10 @@ const (
 	// 33: hera skills tell coordinators to omit a worker backend unless one of
 	//     three concrete needs applies, and to prefer archetype over a
 	//     backend-specific model. A stale supervisor serves the older guidance.
-	SupervisorSpawnSurface = 33
+	// 34: omp (Oh My Pi) backend family: capture-style sessions, per-launch
+	//     MCP via a generated --plugin-dir plugin, skills via a --config
+	//     overlay. A stale supervisor launches omp as a custom command.
+	SupervisorSpawnSurface = 34
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -479,7 +482,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "6a811eb3c0b39cca7ab1ee03083da74541100440a2c988efc491171c1f9deeba"
+	SpawnSurfaceDigest  = "930ffa9af4ea8279a291f3520d8e414313cac780216d82a1cc5017894afb2e8e"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

@@ -53,6 +53,9 @@ const (
 	// SkillsGlobal materializes the skills dir per launch; the family's
 	// InjectGlobal registers it in the CLI's global config at daemon startup.
 	SkillsGlobal
+	// SkillsConfigOverlay appends `--config <overlay.yml>` setting
+	// skills.customDirectories (omp).
+	SkillsConfigOverlay
 )
 
 // RoutingDelivery is how a family receives Argus's builtin routing content
@@ -496,6 +499,25 @@ var families = []*Family{
 			{HomeRel: "/.cursor/chats", Comment: "Cursor CLI chat store; capture reads it post-exit."},
 			{HomeRel: "/.cursor/projects", Comment: "Cursor CLI per-project state."},
 			{HomeRel: "/.cursor/statsig-cache.json", Prefix: true, Comment: "Cursor CLI feature-flag cache (written via atomic-rename siblings)."},
+		},
+	},
+	{
+		Spec:               mustSpec(backendkind.Omp),
+		ResumeFlag:         "--resume",
+		Capture:            captureOmp,
+		RecaptureEveryExit: true,
+		ModelDelivery:      ModelFlag,
+		SkillDelivery:      SkillsConfigOverlay,
+		RoutingDelivery:    RoutingAppendFlag,
+		// omp has no MCP flag or env; it loads .mcp.json from --plugin-dir plugins.
+		MCPFlag:              ompMCPFlag,
+		PermissionFlags:      ompPermissionFlags,
+		PermissionFlagTokens: []string{"--approval-mode", "--auto-approve", "--yolo"},
+		// Launch-only: ~/.omp/agent holds mcp.json and config.yml, which an
+		// unsandboxed omp later trusts.
+		SandboxGrantsLaunchOnly: true,
+		SandboxGrants: []SandboxGrant{
+			{HomeRel: "/.omp", Comment: "Oh My Pi agent DBs, sessions (~/.omp/agent/sessions), logs, and runtime state."},
 		},
 	},
 }
