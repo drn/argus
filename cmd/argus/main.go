@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
@@ -278,6 +279,9 @@ func runTUI() {
 		// The account picker and the "auto" move target read the daemon's
 		// per-account usage caches.
 		defer agent.SetAccountUsageSource(client.AccountUsageSource())()
+		// Task creation resolves backend tiers in this process; the probe
+		// caches it would read are empty here, so route on the daemon's.
+		defer backendtier.SetUsageSource(client.RoutingUsage)()
 		defer client.Close()
 	}
 

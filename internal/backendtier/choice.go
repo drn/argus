@@ -18,8 +18,10 @@ func ResolveChoice(cfg config.Config, backend, account string) Choice {
 	if strategy != "" && strategy != config.StrategyOrdered && strategy != config.StrategyHeadroom {
 		warnUnknownStrategy(strategy)
 	}
-	var best, unread Choice
-	var score float64
+	var best, unread, over Choice
+	var score, overPct float64
+	var rd readings
+	haveReadings := false
 	for _, tier := range cfg.BackendRouting.Tiers {
 		b, ok := cfg.Backends[tier.Backend]
 		if !ok || (backend != "" && tier.Backend != backend) {
@@ -49,11 +51,14 @@ func ResolveChoice(cfg config.Config, backend, account string) Choice {
 		var known bool
 		switch tier.Probe {
 		case config.ProbeNone:
-		case config.ProbeClaudeUsage:
-			pct, known = claudeUsageForAccount([]string{selected})()
-		case config.ProbeCodexUsage:
-			if selected == "" || selected == config.DefaultAccountName {
-				pct, known = codexCachedPct()
+		case config.ProbeClaudeUsage, config.ProbeCodexUsage:
+			if !haveReadings {
+				rd, haveReadings = currentReadings(), true
+			}
+			if tier.Probe == config.ProbeClaudeUsage {
+				pct, known = rd.claude(selected)
+			} else if selected == "" || selected == config.DefaultAccountName {
+				pct, known = rd.codex()
 			}
 		default:
 			continue
@@ -72,12 +77,29 @@ func ResolveChoice(cfg config.Config, backend, account string) Choice {
 			continue
 		}
 		headroom := float64(tier.ThresholdPct) - pct
-		if headroom > 0 && (best.Backend == "" || headroom > score) {
-			best, score = choice, headroom
+		if headroom > 0 {
+			if best.Backend == "" || headroom > score {
+				best, score = choice, headroom
+			}
+		} else if over.Backend == "" || pct < overPct {
+			over, overPct = choice, pct
 		}
 	}
+	// Preference under headroom: a known tier with room > a tier with no
+	// reading (unknown fails open) > the least-used tier when every known tier
+	// is at/over its threshold. The last case must still pick a tier: returning
+	// empty would let callers fall back to the default backend on the default
+	// account, which is the most likely to be the depleted one.
 	if best.Backend != "" {
 		return best
 	}
-	return unread
+	if unread.Backend != "" {
+		return unread
+	}
+	if over.Backend != "" {
+		over.Reason += " (all tiers over threshold; least-used)"
+		uxlog.Log("[backendtier] all tiers over threshold; least-used backend=%q account=%q usage=%.2f", over.Backend, over.Account, overPct)
+		return over
+	}
+	return Choice{}
 }

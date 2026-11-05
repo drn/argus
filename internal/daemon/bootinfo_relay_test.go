@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/drn/argus/internal/backendtier"
+
 	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/usagebudget"
@@ -146,4 +148,15 @@ func TestAccountUsageRPCReadsDaemonCaches(t *testing.T) {
 	var resp map[string]usagebudget.Reading
 	testutil.NoError(t, rpcFor(d).AccountUsage(&Empty{}, &resp))
 	testutil.Equal(t, resp["default"].Percentage, 64.0)
+}
+
+func TestRoutingUsageRPCReadsDaemonCaches(t *testing.T) {
+	d, _ := testDaemon(t)
+	restore := usagebudget.SetBridgeReader(func(account string) (usagebudget.Reading, bool) {
+		return usagebudget.Reading{Percentage: 64}, account == "default"
+	})
+	defer restore()
+	var resp backendtier.Usage
+	testutil.NoError(t, rpcFor(d).RoutingUsage(&Empty{}, &resp))
+	testutil.Equal(t, resp.Claude["default"].Percentage, 64.0)
 }
