@@ -22,6 +22,7 @@ const (
 	Opencode    Kind = "opencode"
 	Antigravity Kind = "antigravity"
 	Cursor      Kind = "cursor"
+	Omp         Kind = "omp"
 )
 
 // Spec is the static, dependency-free description of a backend family.
@@ -48,6 +49,7 @@ var specs = []Spec{
 	// Only `cursor-agent`: the installer also links a bare `agent`, which is too
 	// generic to claim and stays a custom command.
 	{Kind: Cursor, Binaries: []string{"cursor-agent"}, Label: "Cursor", SkillPrefix: "/"},
+	{Kind: Omp, Binaries: []string{"omp"}, Label: "Oh My Pi", SkillPrefix: "/"},
 }
 
 // customSpec describes any command no family claims.

@@ -872,7 +872,7 @@ final class AppState {
     static func isLikelyClaudeBacked(_ task: ArgusTask, backends: [String: BackendInfo] = [:]) -> Bool {
         guard let name = task.backend, !name.isEmpty else { return true }
         if let switcher = backends[name]?.sessionSwitcher { return switcher }
-        return !["codex", "pi", "opencode", "antigravity"].contains(name.lowercased())
+        return !["codex", "pi", "opencode", "antigravity", "omp"].contains(name.lowercased())
     }
 
     /// Fetches the task's Claude sessions and opens the picker sheet on

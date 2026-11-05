@@ -188,7 +188,11 @@ const (
 	// 33: hera skills tell coordinators to omit a worker backend unless one of
 	//     three concrete needs applies, and to prefer archetype over a
 	//     backend-specific model. A stale supervisor serves the older guidance.
-	SupervisorSpawnSurface = 33
+	// 34: omp (Oh My Pi) backend family: capture-style sessions, per-launch
+	//     MCP via a generated --plugin-dir plugin, skills via a --config
+	//     overlay; Argus default permission asks (omp defaults to yolo). A stale
+	//     supervisor launches omp as a custom command.
+	SupervisorSpawnSurface = 34
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -424,6 +428,8 @@ var SupervisorSpawnPaths = []string{
 	"internal/agent/codexaccount.go",             // per-task Codex home, env hygiene, sandbox grant
 	"internal/config/accounts.go",                // account → config dir resolution BuildCmd reads
 	"internal/agent/nonclaude_context.go",        // OpenCode child-only skills config content
+	"internal/agent/omp.go",                      // omp MCP plugin + skills overlay materialization, permission flags
+	"internal/agent/cachedir.go",                 // content-addressed ~/.argus/cache materialization omp launches use
 	"internal/agent/prelaunch.go",                // backend prelaunch (pi/ollama) run before the fork
 	"internal/agent/routing_prompt.go",           // --append-system-prompt-file routing injection
 	"internal/agent/sandbox.go",                  // the sandbox-exec wrapper the command is wrapped in
@@ -479,7 +485,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "6a811eb3c0b39cca7ab1ee03083da74541100440a2c988efc491171c1f9deeba"
+	SpawnSurfaceDigest  = "4871ee36512852e11609b018cbd0c29c790a0ea602f5b1261108c8c5a27b8944"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 
