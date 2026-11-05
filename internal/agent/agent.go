@@ -913,7 +913,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 				opencodeSkillsDir = skills.BuiltinSkillsDir(root)
 			case SkillsConfigOverlay:
 				if overlay, err := ensureOmpConfigOverlayFn(skills.BuiltinSkillsDir(root)); err != nil {
-					uxlog.Log("[skills] omp config overlay failed (continuing without builtin skills): %v", err)
+					uxlog.Log("[skills] omp config overlay materialize failed (continuing without builtin skills): %v", err)
 				} else if overlay != "" {
 					cmdStr += " --config " + shellQuote(overlay)
 				}

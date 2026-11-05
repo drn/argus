@@ -429,6 +429,7 @@ var SupervisorSpawnPaths = []string{
 	"internal/config/accounts.go",                // account → config dir resolution BuildCmd reads
 	"internal/agent/nonclaude_context.go",        // OpenCode child-only skills config content
 	"internal/agent/omp.go",                      // omp MCP plugin + skills overlay materialization, permission flags
+	"internal/agent/cachedir.go",                 // content-addressed ~/.argus/cache materialization omp launches use
 	"internal/agent/prelaunch.go",                // backend prelaunch (pi/ollama) run before the fork
 	"internal/agent/routing_prompt.go",           // --append-system-prompt-file routing injection
 	"internal/agent/sandbox.go",                  // the sandbox-exec wrapper the command is wrapped in
@@ -484,7 +485,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "7c78a1d8f47cb8880336fe719e19570836c54d6f6eb2adf3391afbcfe3f35924"
+	SpawnSurfaceDigest  = "4871ee36512852e11609b018cbd0c29c790a0ea602f5b1261108c8c5a27b8944"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

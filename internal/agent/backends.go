@@ -513,8 +513,7 @@ var families = []*Family{
 		MCPFlag:              ompMCPFlag,
 		PermissionFlags:      ompPermissionFlags,
 		PermissionFlagTokens: []string{"--approval-mode", "--auto-approve", "--yolo"},
-		// Launch-only: ~/.omp/agent holds mcp.json and config.yml, which an
-		// unsandboxed omp later trusts.
+		// Launch-only: ~/.omp/agent holds mcp.json and config.yml an unsandboxed omp trusts.
 		SandboxGrantsLaunchOnly: true,
 		SandboxGrants: []SandboxGrant{
 			{HomeRel: "/.omp", Comment: "Oh My Pi agent DBs, sessions (~/.omp/agent/sessions), logs, and runtime state."},
