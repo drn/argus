@@ -52,6 +52,7 @@ const (
 	srSpinner
 	srAgentZoom
 	srCrossTabArrows
+	srProjectFirst
 	srVaultPath
 	srUpdateArgus
 	srSourcePath
@@ -339,7 +340,9 @@ type SettingsView struct {
 	defaultAgentZoom bool
 
 	// Cross-tab modified-arrow navigation between the Tasks list and Hera rail.
-	crossTabArrows bool
+	crossTabArrows    bool
+	projectFirst      bool
+	projectFirstError string
 
 	// Default permission mode injected into Claude-style backend commands
 	// (one of config.PermissionModes). Empty falls back to the bypass-active
@@ -689,6 +692,7 @@ func (sv *SettingsView) Refresh() {
 	// Default agent-view layout.
 	sv.defaultAgentZoom = cfg.UI.DefaultAgentZoom
 	sv.crossTabArrows = cfg.UI.CrossTabArrows
+	sv.projectFirst = cfg.UI.ProjectFirst
 
 	// Default permission mode. Fall back to the config default when unset so
 	// the row always reflects what BuildCmd will actually inject.
@@ -1278,6 +1282,11 @@ func (sv *SettingsView) rebuildRows() {
 			arrowLabel = "Cmd+arrows traverse all tabs/panes: On"
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srCrossTabArrows, label: arrowLabel, key: "_cross_tab_arrows"})
+		projectLabel := "Project first: Off"
+		if sv.projectFirst {
+			projectLabel = "Project first: On"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srProjectFirst, label: projectLabel, key: "_project_first"})
 
 	case catLogs:
 		sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "UX Log", key: "ux"})
@@ -1754,6 +1763,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		case srCrossTabArrows:
 			sv.toggleCrossTabArrows()
 			return true
+		case srProjectFirst:
+			sv.toggleProjectFirst()
+			return true
 		case srPermissionMode:
 			sv.cyclePermissionMode(1)
 			return true
@@ -2173,6 +2185,9 @@ func (sv *SettingsView) handleEnter() bool {
 		return true
 	case srCrossTabArrows:
 		sv.toggleCrossTabArrows()
+		return true
+	case srProjectFirst:
+		sv.toggleProjectFirst()
 		return true
 	case srPermissionMode:
 		sv.cyclePermissionMode(1)
@@ -3190,6 +3205,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderAgentZoomDetail(screen, x, y, w, h)
 	case srCrossTabArrows:
 		sv.renderCrossTabArrowsDetail(screen, x, y, w, h)
+	case srProjectFirst:
+		sv.renderProjectFirstDetail(screen, x, y, w, h)
 	case srPermissionMode:
 		sv.renderPermissionModeDetail(screen, x, y, w, h)
 	case srLogs:

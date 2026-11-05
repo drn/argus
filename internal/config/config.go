@@ -439,6 +439,9 @@ type UIConfig struct {
 	// chain: Tasks ⇄ Hera rail ⇄ coord pane ⇄ agent pane ⇄ Settings left ⇄
 	// Settings right. Defaults off; opt in from Settings → Appearance.
 	CrossTabArrows bool `toml:"cross_tab_arrows"`
+	// ProjectFirst asks for a project before independent TUI task/coordinator
+	// creation. Defaults off; opt in from Settings → Appearance.
+	ProjectFirst bool `toml:"project_first"`
 }
 
 // SandboxConfig controls OS-level sandboxing of agent processes.

@@ -120,6 +120,7 @@ var staticHelpSections = []HelpSection{
 		Title: "Modals & Forms",
 		Bindings: []HelpBinding{
 			{"Esc / ctrl+q", "close / cancel"},
+			{"Esc (project first)", "back to projects; Esc again cancels"},
 			{"Enter", "confirm / submit"},
 			{"Tab / Shift+Tab", "navigate fields"},
 		},
