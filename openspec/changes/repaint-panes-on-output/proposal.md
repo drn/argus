@@ -8,8 +8,8 @@ This is the first of three changes. `reduce-needs-input-scan-cost` and `move-nee
 
 ## What changes
 
-- **Timing log.** Each keystroke forwarded to an agent logs its latency through `uxlog`, from the key press to the echo being painted. The line breaks that time into its parts, including time spent waiting behind the tick stall, so each fix gets the right credit. No key content is ever logged.
-- **Slow tick log.** A tick closure that takes 16ms or longer logs its duration.
+- **Timing log, off by default.** It runs only when a TUI is launched with `ARGUS_TYPING_LOG=1`, so normal use does none of this work. While it's on, each keystroke forwarded to an agent logs its latency through `uxlog`, from the key press to the echo being painted. The line breaks that time into its parts, including time spent waiting behind the tick stall, so each fix gets the right credit. No key content is ever logged.
+- **Slow tick log.** While the timing log is on, a tick closure that takes 16ms or longer logs its duration.
 - **Latency tool.** A new developer tool, `cmd/argus-latency`, reports percentiles from the timing log and measures UI goroutine stalls using the method from the original investigation.
 - **Before baseline.** The timing log ships as its own commit and is measured in a relaunched TUI before the repaint change lands.
 - **Output-driven repaint.** One repaint pump covers the Tasks agent view and both Hera panes. It repaints when output arrives for a pane that is on screen, coalesced under a frame cap of about 8ms.
