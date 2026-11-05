@@ -18,6 +18,18 @@ This baseline is **incomplete**: busy CPU and the three-pane typing window are p
 
 ## Paired capture procedure
 
+### Before progress (2026-11-05, end boundary pending)
+
+- **Process/window:** the baseline v2 TUI started at 11:10:10.024 PST and successfully bound pprof port 6061. First timing sample: 11:10:11.528. Screen size recorded at startup: 212×52.
+- **Setup snapshot at 11:10:43:** uptime 17 days, 21:12; load 4.79 / 5.01 / 5.67. The session-state API reported 7 running and 5 idle; MCP separately reported 7 tasks with `in_progress` status.
+- **Busy CPU:** native profile starts at 11:12:41 PST, duration 20.04s, total samples 1.69s, **8.43% of one core**. Request began at 11:12:40. The session-state snapshot during profiling showed 7 running and 6 idle. Text is `paired-before-busy-cpu.txt`, raw profile `pprof.argus-baseline.samples.cpu.002.pb.gz`, both in the frozen v2 scratch directory.
+- **Known restart confound:** coordinator task `1793856717985375000` was stopped for width repair at 11:11:23.329, restarted at 11:11:23.778, and its pane re-resolved at 11:11:24.214. Samples overlapping that interruption must be excluded from final echo numbers.
+- **Reported resize:** the coordinator reported a terminal resize around 11:13–11:14. No additional `afterDraw resize` marker or actual restart was observed during the native CPU interval ending about 11:13:01; a fullscreen pane width change was logged earlier at 11:12:10. Exact resize exclusion bounds still need confirmation, and the final latency table is pending that filtering.
+- **Sample completeness:** the initial report bounded at the first busy signal (11:12:15) had only 59 coordinator samples and none for Tasks or the worker pane. A later open-window snapshot has 344 Tasks and 175 coordinator samples, still no worker samples. These are unfiltered interim counts, not a completed three-pane baseline. Paste/dictation is not counted by key timing; the coordinator was notified that manual-key coverage remains incomplete.
+- **Preservation:** raw typing metadata is saved as `paired-typing-snapshot.txt`; interim reports as `paired-before-report-raw.txt` and `paired-before-report-interim.txt`. `BEFORE DONE`, final exclusion bounds, the final report, and all After measurements remain pending.
+
+### Operator steps
+
 The coordinator approved completing the remaining Before and After typing and busy CPU captures back-to-back. Keep the same terminal size and daemon/supervisor deployment, and choose **Skip/Esc** in both skew modals. Close only the TUI between runs.
 
 1. Launch frozen Before: `ARGUS_TYPING_LOG=1 /tmp/argus-paint-baseline-v2.CyRaje/argus-baseline`.
