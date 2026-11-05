@@ -167,33 +167,28 @@ func TestStopDevStackFor_RealProcess(t *testing.T) {
 	t.Cleanup(func() { psCommand = prevPs })
 	psCommand = realPsCommand
 
-	// The fake worktree root plus a script literally named "mysqld" living
-	// directly inside it: BSD sleep(1) rejects extra positional args (which
-	// rules out passing a marker+path as trailing sleep args), so instead
-	// the executable's own path carries both substrings the real production
-	// command lines have — a known dev-stack name and the worktree root —
-	// with no extra argv needed. The script loops forever without `exec`ing
-	// into something else, so its own invocation path (embedding both
-	// substrings) stays visible in ps/pgrep for the life of the process.
+	// The fake worktree root; the fake process is a symlink named mysqld inside it.
 	wt := t.TempDir() + "/.argus/worktrees/faketest/faketask"
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		t.Fatalf("mkdir fake worktree: %v", err)
 	}
-	// A symlink to the sleep binary named "mysqld": argv[0] is the dev-stack
-	// binary and the worktree root is in its path, matching the executable-
-	// based classification (a #! script would show as /bin/sh <script>).
-	scriptPath := wt + "/mysqld"
-	sleepBin, err := exec.LookPath("sleep")
+	// The standard Go helper-process pattern: a symlink named "mysqld" to the
+	// test binary itself, which blocks in TestDevStackHelperProcess. argv[0]
+	// is the symlink path (a dev-stack binary name inside the worktree), and
+	// nothing depends on the host's coreutils — a multi-call `sleep` (Ubuntu
+	// 26.04's uutils) exits when invoked under another name, and a #! script
+	// would show as /bin/sh <script>.
+	self, err := os.Executable()
 	if err != nil {
-		t.Skip("sleep not on PATH")
+		t.Fatalf("os.Executable: %v", err)
 	}
-	// A symlink, not a copy: a copied platform binary can be killed at exec
-	// by code-signing enforcement, while argv[0] stays the symlink path.
-	if err := os.Symlink(sleepBin, scriptPath); err != nil {
+	scriptPath := wt + "/mysqld"
+	if err := os.Symlink(self, scriptPath); err != nil {
 		t.Fatalf("symlink fake mysqld: %v", err)
 	}
 
-	cmd := exec.Command(scriptPath, "1000")
+	cmd := exec.Command(scriptPath, "-test.run=^TestDevStackHelperProcess$")
+	cmd.Env = append(os.Environ(), "ARGUS_DEVSTACK_HELPER=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start fake dev-stack process: %v", err)
 	}
@@ -212,6 +207,15 @@ func TestStopDevStackFor_RealProcess(t *testing.T) {
 	if !waitUntilGone(pid, 3*time.Second) {
 		t.Fatalf("pid %d still running after stopDevStackFor", pid)
 	}
+}
+
+// TestDevStackHelperProcess is the body of the fake dev-stack process started
+// by TestStopDevStackFor_RealProcess; a no-op in a normal test run.
+func TestDevStackHelperProcess(t *testing.T) {
+	if os.Getenv("ARGUS_DEVSTACK_HELPER") != "1" {
+		return
+	}
+	time.Sleep(time.Hour)
 }
 
 func waitUntilVisible(t *testing.T, pid int, worktreePath string) {
@@ -420,12 +424,12 @@ func (h *stopHarness) signals() []string {
 	return out
 }
 
-const stopWT = "/Users/aaron/.argus/worktrees/proj/task"
+const devStackTestDir = "/Users/aaron/.argus/worktrees/proj/task"
 
 func pcLine(pid int) string {
-	return fmt.Sprintf("%d process-compose -f %s/.devbox/virtenv/redis/process-compose.yaml\n", pid, stopWT)
+	return fmt.Sprintf("%d process-compose -f %s/.devbox/virtenv/redis/process-compose.yaml\n", pid, devStackTestDir)
 }
-func myLine(pid int) string { return fmt.Sprintf("%d mysqld --datadir=%s/d\n", pid, stopWT) }
+func myLine(pid int) string { return fmt.Sprintf("%d mysqld --datadir=%s/d\n", pid, devStackTestDir) }
 
 func TestStopDevStackFor_SignalsOnlyExactMatch(t *testing.T) {
 	const sibling = "222 process-compose -f /Users/aaron/.argus/worktrees/Sherlock/3b-more/.devbox/virtenv/redis/process-compose.yaml\n"
@@ -443,7 +447,7 @@ func TestStopDevStackFor_NoMatchesIsNoop(t *testing.T) {
 
 func TestStopDevStackFor_SigkillsSurvivors(t *testing.T) {
 	h := newStopHarness(t, myLine(555))
-	stopDevStackFor(stopWT)
+	stopDevStackFor(devStackTestDir)
 	testutil.DeepEqual(t, h.events, []string{"terminated:555", "sleep", "killed:555"})
 }
 
@@ -451,7 +455,7 @@ func TestStopDevStackFor_SupervisorGraceSleepsBetweenSupervisorAndChildren(t *te
 	// The supervisor-grace sleep is what gives a supervisor time to shut down
 	// before the direct round: deleting it must change this sequence.
 	h := newStopHarness(t, myLine(200)+pcLine(100), myLine(200), "")
-	stopDevStackFor(stopWT)
+	stopDevStackFor(devStackTestDir)
 	testutil.DeepEqual(t, h.events, []string{"terminated:100", "sleep", "terminated:200", "sleep"})
 	testutil.Equal(t, h.sleeps[0], devStackSupervisorGrace)
 	testutil.Equal(t, h.sleeps[1], devStackGracePeriod)
@@ -459,7 +463,7 @@ func TestStopDevStackFor_SupervisorGraceSleepsBetweenSupervisorAndChildren(t *te
 
 func TestStopDevStackFor_SupervisorsKilledBeforeChildren(t *testing.T) {
 	h := newStopHarness(t, myLine(200)+pcLine(100)) // child listed first; all survive
-	stopDevStackFor(stopWT)
+	stopDevStackFor(devStackTestDir)
 	testutil.DeepEqual(t, h.events, []string{
 		"terminated:100", "sleep",
 		"terminated:200", "terminated:100", "sleep",
@@ -468,22 +472,22 @@ func TestStopDevStackFor_SupervisorsKilledBeforeChildren(t *testing.T) {
 }
 
 func TestStopDevStackFor_MysqldSafeIsASupervisor(t *testing.T) {
-	safe := fmt.Sprintf("100 /nix/store/x/bin/mysqld_safe --datadir=%s/d\n", stopWT)
+	safe := fmt.Sprintf("100 /nix/store/x/bin/mysqld_safe --datadir=%s/d\n", devStackTestDir)
 	h := newStopHarness(t, myLine(200)+safe, myLine(200), "")
-	stopDevStackFor(stopWT)
+	stopDevStackFor(devStackTestDir)
 	testutil.DeepEqual(t, h.events, []string{"terminated:100", "sleep", "terminated:200", "sleep"})
 }
 
 func TestStopDevStackFor_RemovalWrappersNotRegressed(t *testing.T) {
 	for name, line := range map[string]string{
-		"devbox run --":           fmt.Sprintf("10 devbox run -- mysqld --datadir=%s/d\n", stopWT),
-		"devbox run":              fmt.Sprintf("10 devbox run mysqld --datadir=%s/d\n", stopWT),
-		"devbox run -- env A=1":   fmt.Sprintf("10 devbox run -- env A=1 mysqld --datadir=%s/d\n", stopWT),
+		"devbox run --":           fmt.Sprintf("10 devbox run -- mysqld --datadir=%s/d\n", devStackTestDir),
+		"devbox run":              fmt.Sprintf("10 devbox run mysqld --datadir=%s/d\n", devStackTestDir),
+		"devbox run -- env A=1":   fmt.Sprintf("10 devbox run -- env A=1 mysqld --datadir=%s/d\n", devStackTestDir),
 		"launchd-parented mysqld": myLine(10),
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newStopHarness(t, line, "")
-			stopDevStackFor(stopWT)
+			stopDevStackFor(devStackTestDir)
 			testutil.DeepEqual(t, h.events[:1], []string{"terminated:10"})
 		})
 	}
@@ -492,15 +496,15 @@ func TestStopDevStackFor_RemovalWrappersNotRegressed(t *testing.T) {
 func TestStopDevStackFor_MultilinePromptPhantomNeverSignaled(t *testing.T) {
 	// pgrep prints 48213 on its own line from inside a multi-line prompt of
 	// pid 7 (an agent). 48213's own live argv is something unrelated.
-	scan := "7 claude --prompt first line\n48213 /nix/store/x/bin/mysqld --datadir=" + stopWT + "/d\nlast line\n"
+	scan := "7 claude --prompt first line\n48213 /nix/store/x/bin/mysqld --datadir=" + devStackTestDir + "/d\nlast line\n"
 	h := newStopHarness(t, scan)
 	h.ps[48213] = "/usr/bin/vim notes.txt" // the phantom pid is really something else
-	stopDevStackFor(stopWT)
+	stopDevStackFor(devStackTestDir)
 	testutil.Equal(t, len(h.signals()), 0)
 }
 
 func TestVerifyDevStackProc(t *testing.T) {
-	const wt = stopWT
+	const wt = devStackTestDir
 	good := DevStackProc{PID: 5, Name: "mysqld", WorktreePath: wt}
 	tests := []struct {
 		name string
@@ -534,7 +538,7 @@ func TestStopDevStack_LongKillGraceAndAbort(t *testing.T) {
 	// The sweeper passes a 30s kill grace and a Proceed re-check.
 	h := newStopHarness(t, myLine(555))
 	proceeds := 0
-	StopDevStack(stopWT, StopOptions{KillGrace: 30 * time.Second, Proceed: func() bool { proceeds++; return proceeds < 2 }})
+	StopDevStack(devStackTestDir, StopOptions{KillGrace: 30 * time.Second, Proceed: func() bool { proceeds++; return proceeds < 2 }})
 	// Proceed true before the SIGTERM round, false before SIGKILL: no kill.
 	testutil.DeepEqual(t, h.events, []string{"terminated:555", "sleep"})
 	testutil.Equal(t, h.sleeps[0], 30*time.Second)
@@ -542,7 +546,7 @@ func TestStopDevStack_LongKillGraceAndAbort(t *testing.T) {
 
 	// Abandoned before anything is signaled.
 	h2 := newStopHarness(t, myLine(556))
-	StopDevStack(stopWT, StopOptions{Proceed: func() bool { return false }})
+	StopDevStack(devStackTestDir, StopOptions{Proceed: func() bool { return false }})
 	testutil.Equal(t, len(h2.events), 0)
 }
 
@@ -550,13 +554,13 @@ func TestStopDevStack_CancelDuringGraceSendsNoKill(t *testing.T) {
 	h := newStopHarness(t, myLine(555))
 	cancel := make(chan struct{})
 	close(cancel)
-	StopDevStack(stopWT, StopOptions{KillGrace: 30 * time.Second, Cancel: cancel})
+	StopDevStack(devStackTestDir, StopOptions{KillGrace: 30 * time.Second, Cancel: cancel})
 	testutil.DeepEqual(t, h.events, []string{"terminated:555", "sleep"})
 	testutil.Equal(t, h.cancels, 1)
 
 	// Cancelled in the supervisor grace: nothing beyond the supervisor SIGTERM.
 	h2 := newStopHarness(t, myLine(200)+pcLine(100))
-	StopDevStack(stopWT, StopOptions{Cancel: cancel})
+	StopDevStack(devStackTestDir, StopOptions{Cancel: cancel})
 	testutil.DeepEqual(t, h2.events, []string{"terminated:100", "sleep"})
 }
 
@@ -568,7 +572,7 @@ func TestStopDevStack_LogsPIDSignalAndFailuresViaSlog(t *testing.T) {
 
 	h := newStopHarness(t, myLine(555))
 	h.sigErr = errors.New("operation not permitted")
-	stopDevStackFor(stopWT)
+	stopDevStackFor(devStackTestDir)
 	out := buf.String()
 	testutil.Contains(t, out, "pid 555")
 	testutil.Contains(t, out, "terminated")
@@ -578,7 +582,7 @@ func TestStopDevStack_LogsPIDSignalAndFailuresViaSlog(t *testing.T) {
 	buf.Reset()
 	h2 := newStopHarness(t, myLine(556))
 	h2.psErr = errors.New("ps denied")
-	stopDevStackFor(stopWT)
+	stopDevStackFor(devStackTestDir)
 	testutil.Contains(t, buf.String(), "NOT signaling")
 	testutil.Contains(t, buf.String(), "ps denied")
 	testutil.Equal(t, len(h2.signals()), 0)
@@ -594,13 +598,13 @@ func TestStopDevStack_LogsPIDSignalAndFailuresViaSlog(t *testing.T) {
 		}
 		return nil, errors.New("pgrep vanished")
 	}
-	stopDevStackFor(stopWT)
+	stopDevStackFor(devStackTestDir)
 	testutil.Contains(t, buf.String(), "scan unavailable")
 	testutil.Contains(t, buf.String(), "pgrep vanished")
 }
 
 func TestStopDevStack_ExportedWrapperNoopWhenNothingRuns(t *testing.T) {
 	h := newStopHarness(t, "")
-	StopDevStack(stopWT, StopOptions{})
+	StopDevStack(devStackTestDir, StopOptions{})
 	testutil.Equal(t, len(h.events), 0)
 }

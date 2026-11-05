@@ -1009,7 +1009,7 @@ func TestC_RunningChecked(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(ids), 0)
 
-	c.rpc.Close()
+	_ = c.rpc.Close()
 	ids, err = c.RunningChecked()
 	if err == nil {
 		t.Fatal("RunningChecked must report the RPC error")

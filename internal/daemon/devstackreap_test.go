@@ -506,7 +506,7 @@ func dsServeDaemon(t *testing.T) (*Daemon, string) {
 	t.Setenv("HOME", t.TempDir())
 	database, err := db.Open(filepath.Join(db.DataDir(), "data.sql"))
 	testutil.NoError(t, err)
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 	d := New(database)
 	d.prDisableFlagPath = filepath.Join(t.TempDir(), prPollDisableFlag)
 	d.usageBudgetProbe = func(context.Context) error { return nil }
