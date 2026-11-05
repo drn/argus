@@ -9,7 +9,12 @@ A task that finishes leaves its worktree on disk, and anything an agent started 
 - `stopDevStackFor` is reordered to stop supervisors (`process-compose`, `devbox run --` wrappers) before their children, so `restart: "always"` cannot race the kill. Every matched process is still signaled directly.
 - Process matching is tightened to the executable (argv[0], or the token after `devbox run --`), not a substring of the whole command line, because the auto-stop widens the blast radius of a false match.
 - `argus doctor` additionally flags dev stacks whose task is finished (today it flags only stacks whose worktree is gone).
+- Only managed worktrees under `<DataDir>/worktrees/` qualify, and a worktree path shared by several task rows is stopped only when every claimant is finished and idle.
 - A config setting (`on` by default) gates the sweeper.
+
+**Accepted behavior to confirm:** a dev stack started by hand in a finished task's worktree, with no agent session, is stopped after ~2 minutes. The sweeper cannot distinguish it from a leaked agent-started stack. The off switch is `devstack.stop_finished = false`.
+
+**Verification note:** the `devbox run -- mysqld --datadir=...` and launchd-parented shapes are verified by parser tests only; live confirmation is a post-deploy step.
 
 ## Capabilities
 

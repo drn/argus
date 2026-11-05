@@ -61,8 +61,24 @@ Recommendation: yes, add an on/off setting, default ON. The sweeper kills proces
 
 Follow the reaper: `slog` plus `uxlog.Log("[devstackreap] ...")` for stops, skips (exempt, grace, no task, scan failure) and signal failures. The daemon does not call `uxlog.Init`, so (as with the reaper) uxlog lines are no-ops there and `slog` is the daemon's real trail; record this in gotchas.
 
+### D9. Managed-worktree-only (guard 1)
+
+Findings: `Task.Worktree` is stamped in one production place, `agent.CreateAndStart` (`internal/agent/create.go:294`) from `CreateWorktree` -> `WorktreeDir` = `<DataDir>/worktrees/<project>/<task>` (`worktree.go:119`). `api/raw.go:97` preserves the existing value on PUT; the other `Worktree:` literals are the hera role view, a codexcost lookup shim, and `cmd/argus-test-server`. Read-only check of the live DB: 140 tasks, 140 under `.argus/worktrees/`, 0 empty, 0 elsewhere. So today no row holds a canonical checkout. The code does not prevent one (a hand-edited row, a test-server style row), and `worktreePathPattern` only extracts `.argus|.claude/worktrees/<project>/<task>` paths, so a main-checkout `mysqld` is not even extractable. The sweeper adds an explicit second guard: a worktree qualifies only if its cleaned path is inside `<DataDir>/worktrees/` (strictly `db.DataDir()`, narrower than `IsWorktreeSubdir`, which also accepts legacy `.claude/worktrees`). Anything else is skipped and logged (`not-managed`). The main `thanx/sketch` MySQL can never be a candidate.
+
+### D10. Shared worktree path (guard 2)
+
+If several task rows resolve to the same cleaned worktree path, the stack is stopped only when ALL of them are finished, none has a live session or pending restart, and none is exempt (D3). Any unfinished or live claimant blocks the stop.
+
+### D11. Hand-started stack in a finished task's worktree (guard 3 - for Aaron to rule on)
+
+A person who starts a dev stack by hand in the worktree of a `complete`/archived task, with no agent session, has it stopped after two consecutive ticks (~2 min). The sweeper cannot tell a hand-started stack from a leaked agent-started one: both are just processes under a finished task's worktree. Proposed: accept this. The protections are D3 (a resumed session exempts the task) and the off switch `devstack.stop_finished = false`. Detection alternatives (process start time vs task end time, controlling-terminal check) are fragile and are not proposed. Aaron to confirm accept-as-is.
+
+### D12. Verification of the process shapes
+
+The two Oct 30 shapes (`devbox run -- mysqld --datadir=<wt>/tmp/mysql-data` and a launchd-parented `mysqld`) are verified by parser tests only. Live confirmation against real processes is a post-deploy step (e.g. `argus doctor` listing them).
+
 ## Risks / Trade-offs
 
-- A user who starts a stack on a finished task without resuming a session loses it. Mitigated by the setting and D3; doctor still shows it.
+- A user who starts a stack by hand on a finished task without resuming a session loses it (D11). Mitigated by the setting and D3.
 - Tighter matching could miss an odd wrapper (e.g. a custom launcher). Accepted: false negatives leak a stack, false positives kill an agent.
 - The 2-tick grace (~2 min) delays cleanup; acceptable.

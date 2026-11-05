@@ -7,6 +7,7 @@
 
 - [ ] 2.1 Config key `devstack.stop_finished` (default true, live-read), config tests
 - [ ] 2.2 Tests then code: `devstackreap.go` eligibility (two-tick grace, no session, no pending restart), resume exemption, first-tick backlog, unfinished/unknown-task skips, scan-failure skip, setting off; injected scan/signal/runner/tasks seams, no real processes
+- [ ] 2.2b Tests: managed-dir guard (main checkout, legacy `.claude/worktrees`, empty path skipped); shared-path multi-claimant (unfinished / live / exempt claimant blocks)
 - [ ] 2.3 Start the loop in `daemon.go` next to `runFinishedSessionReaper`; slog + uxlog lines
 
 ## 3. Doctor (binary-coherence)
@@ -15,6 +16,7 @@
 
 ## 4. Docs and close-out
 
+- [ ] 4.0 Post-deploy (human): live-confirm the `devbox run -- mysqld` and launchd-parented shapes via `argus doctor`; parser tests are the only pre-merge verification
 - [ ] 4.1 Gotchas in `context/knowledge/gotchas/worktree.md` (incl. daemon has no uxlog.Init) and `context/knowledge/index.md`; README Reference only if a table is affected
 - [ ] 4.2 Confirm surface test needs no digest re-record; `make pre-pr`
 - [ ] 4.3 Archive the change in the same PR

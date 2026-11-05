@@ -29,6 +29,30 @@ The daemon SHALL periodically scan running dev-stack processes, map each to its 
 - **WHEN** the process scan cannot run
 - **THEN** the sweeper logs it and signals nothing that tick
 
+### Requirement: Sweep is limited to managed, unclaimed worktrees
+
+The sweeper SHALL consider only worktrees whose cleaned path is inside the argus data directory's `worktrees/` directory; any other path (such as a project's main checkout) SHALL be skipped and logged. When several task rows share one cleaned worktree path, the stack SHALL be stopped only if every such task is finished, has no live session or pending restart, and is not exempt.
+
+#### Scenario: Main checkout is never a candidate
+
+- **WHEN** a finished task's row holds a project's main checkout path and a `mysqld` runs against it
+- **THEN** the sweeper does not signal it
+
+#### Scenario: Shared path with an unfinished claimant
+
+- **WHEN** two task rows share a worktree path, one `complete` and one `in_progress`
+- **THEN** the stack is not stopped
+
+#### Scenario: Shared path with a live finished claimant
+
+- **WHEN** two task rows share a worktree path, both finished, and one has a live session
+- **THEN** the stack is not stopped
+
+#### Scenario: Hand-started stack in a finished worktree
+
+- **WHEN** a stack runs in a managed worktree of a finished task with no session, however it was started
+- **THEN** it is stopped after two consecutive ticks, unless `devstack.stop_finished` is false
+
 ### Requirement: Deliberately resumed finished tasks are exempt
 
 A finished task observed with a live session on any tick other than the sweeper's first after daemon start SHALL be exempt from the dev-stack sweep until the task becomes unfinished. The first tick after daemon start SHALL grant no exemption.
