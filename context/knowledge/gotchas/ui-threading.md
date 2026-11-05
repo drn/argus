@@ -1,5 +1,7 @@
 ## UI Threading
 
+- **Keep the terminfo TTY size cache below the screen layer: Clear/Draw/Show still run normally.** tcell v2.13.8 issues a terminal-size ioctl on every Show; resolve terminfo before opening the TTY, since its stock Close cannot release a device that has not been started.
+
 - **Quit through `stopTUI`, which stops output wakes and lets the single queued repaint return before stopping tview.** `QueueUpdateDraw` is synchronous and cannot be cancelled after enqueue; stopping the event loop first would strand the pump.
 
 - **Output subscriptions follow panes actually drawn, including Hera fullscreen, rather than tab or focus guesses.** The shared pump coalesces notifications before a draw, preserving output that arrives during it; its writers never block, and each Done watcher is cancelled when its pane hides or rebinds.

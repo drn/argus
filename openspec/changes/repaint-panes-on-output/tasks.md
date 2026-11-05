@@ -36,6 +36,14 @@ Baseline verification: `make pre-pr` was run in full; Go 1.26.8's 11 standard-li
 - [ ] 4.2 Compare busy-agent CPU. If it rises more than 10 points of one core on the same workload, apply the tuning order in `design.md` and re-measure.
 - [ ] 4.3 Check `arrive_ms` and the `[repaint]` lines against the two unmeasured assumptions (relay hop cost, Claude's redraw rate). If relay hops matter, tell the coordinator, because scope changes.
 
+## 4a. Bound terminal-size query cost (coordinator approved)
+
+- [x] 4a.1 Add failing fake-TTY tests for successful-query reuse, exact 1-second expiry, resize invalidation before callback, error passthrough, Start/resume/Stop and concurrent invalidation. Add a SimulationScreen test for production screen setup.
+- [x] 4a.2 Implement a cached tcell.Tty wrapper, preserve 8ms repainting and all normal Clear/Draw/Show behavior, document gotchas and confirm protocols/supervisor surface are unchanged.
+- [ ] 4a.3 Run both review lenses and full local gates, commit locally without pushing, then build a fresh scratch binary and report its path and SHA-256. Remeasure BUSY with typing diagnostics on; IDLE follows only if BUSY is at most 17.38% of one core.
+
+Cache review: `hera-review` and `hera-review-test-adversary` identified and resolved test gaps in production factory integration and actual paste-handler delivery; the SimulationScreen setup test also observes mouse/paste enablement after Init, because injected paste events alone cannot detect broken initialization order. Real tcell Show tests exercise the production factory, exact TTL expiry, and notified/missed resizes. Final 1-second focused race tests pass. Full `make pre-pr` passes build/vet/format/lint (0 issues), then stops at the same 11 standard-library vulnerabilities covered by the coordinator's advisory exception; its exit status is preserved. The separate full race/coverage gate passes at 89.0% (40,622/45,658 statements; 13 excluded files). All 78 strict OpenSpec validations pass. ProtocolVersion remains 11, and `TestSupervisorSurfaceDigest` passes without changing its expected digest. The controlled remeasurement remains pending.
+
 ## 5. Documentation and ship
 
 - [x] 5.1 Update `gotchas/ui-threading.md` (fix-redraw-loop-leak bullet) and `gotchas/pty-terminal.md` (the 200ms loop and 16ms follow-up bullets) to describe the pump, keeping the history. Add new gotchas for the writer-based signal and why `session.go` must stay untouched, and update `context/knowledge/index.md`.

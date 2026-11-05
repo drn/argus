@@ -132,6 +132,12 @@ A tick closure taking 16ms or longer logs `[tick] closure_ms=N`. The pump logs `
 
 Earlier guidance is that features which materially change the experience get an on/off setting, and pure logic moves don't. This adds no new UI or interaction path: panes look the same and only update sooner. So there is no setting and the frame cap stays a constant. If the busy-agent CPU check fails, the response is tuning (see risks).
 
+### 8. Bound the terminal-size ioctl cost
+
+The controlled busy profiles attribute 2.67s of the 3.17s CPU increase to tcell's unchanged-size ioctl: every Show calls resize and then WindowSize. Coordinator approval on 2026-11-05 adds a small tcell.Tty decorator with a 1-second successful-result cache, used by the terminfo screen. Resize notification invalidates before forwarding the callback; Start (including resume) and Stop invalidate before and after delegating. Errors are never cached. A mutex serializes queries and invalidation; callbacks execute outside it so they can query dimensions themselves.
+
+Keep the 8ms frame cap and every normal Clear/Draw/Show. Partial pane drawing leaves the dominant Show ioctl intact, while a slower frame cap would trade latency for CPU without removing that cost. Aaron amended the proposed 100ms TTL to 1 second: at an estimated 3.3ms per ioctl, querying ten times a second would still cost about three CPU percentage points; once a second costs about 0.3. The TTL is only a missed-SIGWINCH backstop, not a polling timer; correctness comes from immediate notification and lifecycle invalidation. Tests cover exact TTL boundaries, notification ordering, errors, lifecycle changes and concurrent access, plus production screen setup with a SimulationScreen. No protocol or supervisor surface changes are needed.
+
 ## Baseline procedure
 
 **Coordinator amendment, 2026-11-05:** the v2 timing-only binary at `/tmp/argus-paint-baseline-v2.CyRaje/` is frozen with hotfix `2349aead`. Implementation may proceed before the remaining Before typing and busy CPU capture. Aaron will complete Before on that binary and After on a separately built repaint binary in one sitting, recording load and task count for both. The recorded idle Before figures remain valid. No deployment, push or PR is authorized until the coordinator resumes those steps; always choose Skip/Esc in scratch-binary skew modals, since a restart action can repoint the shared deployment at the scratch binary.

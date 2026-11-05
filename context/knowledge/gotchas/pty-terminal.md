@@ -106,3 +106,5 @@
 - **Automatic width repair must never kill-and-resume Claude before its exact pinned transcript exists under its effective launch directory and logical or physical worktree path.** Quiet output does not imply a saved conversation: preserve retry eligibility with 10→60s backoff; explicit Hera revive and dead relaunch can recover fresh with the original prompt, while uncertain relaunch inspection preserves the ID and attempts resume.
 
 - **The diff pane wraps instead of clipping: `BuildUnifiedDiffLines`/`BuildSideBySideDiffLines` take the pane width and emit continuation rows, so `renderDiff` must rebuild both caches on a width change (`diffUnifiedWidth`/`diffSplitWidth`).** Word-highlight spans index the unwrapped content, so apply them before `wrapCells`; split-view continuation rows pad the shorter side to keep the `│` aligned.
+
+- **Invalidate cached terminal dimensions before forwarding SIGWINCH callbacks, and before/after TTY Start (including resume) and Stop.** Callbacks may query size themselves; invoke them outside the cache mutex, never cache query errors, and retain the 1-second expiry for missed notifications.

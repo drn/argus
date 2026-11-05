@@ -77,6 +77,49 @@ All table values are milliseconds; `n` is the number of retained samples. Quiet 
 | tasks | quiet | stall_ms | 370 | 0.000 | 0.000 | 16.128 | 27.549 |
 | tasks | quiet | quiet_ms | 370 | 110.967 | 354.015 | 3847.254 | 945140.315 |
 
+### CPU view controls and rate candidates (in progress)
+
+The initial CPU captures did not hold the visible workload fixed. Before's 8.43% profile began at 11:12:41 and overlapped a Ctrl+Z fullscreen transition at 11:12:46.091 (coordinator pane width 89→178). The first 8ms After busy profile used the Hera split with coordinator and worker output visible. These numbers are preserved as exploratory evidence and do not determine the like-for-like CPU gate.
+
+| Capture | Native start PST | Duration | CPU samples | One-core CPU | View |
+| --- | --- | ---: | ---: | ---: | --- |
+| Initial Before busy | 11:12:41 | 20.04s | 1.69s | 8.43% | Mixed split/fullscreen during profile |
+| Initial 8ms After busy | 12:27:29 | 20.13s | 5.72s | 28.41% | Hera split, coordinator + worker output |
+| 8ms After hands-off | 12:32:00 | 20.14s | 4.94s | 24.53% | Hera split, worker output continuing |
+| Controlled BASE busy | 12:39:02 | 20.05s | 1.48s | 7.38% | Fixed Hera split, coordinator + 2a worker |
+| Controlled BASE idle | 12:45:10 | 20.04s | 1.91s | 9.53% | Tasks, groups collapsed, no selection, empty Preview |
+| Controlled 8ms busy | 12:46:50 | 20.14s | 4.65s | 23.09% | Fixed Hera split, identical producer |
+| Controlled 8ms idle | 12:50:21 | 20.02s | 0.50s | 2.50% | Same collapsed Tasks/empty Preview view |
+| Controlled 16ms busy | 13:38:11 | 20.13s | 4.43s | 22.01% | Fixed Hera split, identical producer |
+
+The coordinator's replacement protocol fixes the terminal at 212×52 with no Ctrl+Z or resizing. For BUSY, the same Hera coordinator and 2a worker are visible, and the worker runs an identical lightweight 24-second producer (600 lines at 25Hz) around each 20-second profile, with the same output-poll cadence. For IDLE, the Tasks task list is visible, no agent view is open, the keyboard is hands-off and the producer is stopped. The order is BASE, 8ms, then 16ms. The +10-point CPU guard is applied only within these matched BUSY and IDLE views.
+
+The uncommitted 16ms tuning candidate is `/tmp/argus-paint-tune16.Sux2wK/argus-repaint-16ms`; focused race tests pass. It has not replaced the frozen 8ms binary, and no final cap selection or shipping decision has been made. Its busy result is 14.63 points above BASE and exceeds the guard. The coordinator canceled IDLE 16 and requested CPU attribution before further implementation. The first attempted 16ms relaunch actually listened from the 8ms executable (PID 36473); no profile was taken. The successful retry verified PID 37793's executable as `/private/tmp/argus-paint-tune16.Sux2wK/argus-repaint-16ms`, then waited 15 seconds before starting the identical producer and profile.
+
+Controlled profile text and raw profiles are in `/tmp/argus-paint-after.GB4lCf/` with `controlled-<variant>-<state>` prefixes. `controlled-output.py` records the producer. Controlled BASE relaunch marker: 12:38:00.793, with successful pprof bind and a 212×52 frame. The controlled 8ms busy profile is 15.71 percentage points above BASE, exceeding the +10-point busy guard; idle is 7.03 points below BASE and passes. Its listener PID 20051 resolves through `lsof` to `/private/tmp/argus-paint-after.GB4lCf/argus-repaint`; both native profiles identify `argus-repaint`. IDLE 8 began after the coordinator's requested 20-second screen-settling delay, without a producer.
+
+### Controlled busy CPU attribution
+
+The BASE and 8ms busy profiles contain 1.48s and 4.65s of CPU respectively. Their native durations differ by only 0.09s; the following are absolute cumulative seconds, without normalization. Rows are nested call paths and must not be summed.
+
+| Function/path | BASE CPU | 8ms CPU | Delta |
+| --- | ---: | ---: | ---: |
+| tview Application.draw | 0.62s | 3.76s | +3.14s |
+| lazyScreen.Show / tcell Show | 0.46s | 3.17s | +2.71s |
+| tScreen.resize / devTty.WindowSize / IoctlGetWinsize | 0.30s | 2.97s | +2.67s |
+| TerminalPane.Draw | 0.11s | 0.58s | +0.47s |
+| Root Flex/Pages.Draw | 0.16s | 0.59s | +0.43s |
+| TerminalPane.paintEmu | 0.06s | 0.19s | +0.13s |
+| tScreen.draw (cell diff and write) | 0.16s | 0.20s | +0.04s |
+
+The terminal-size ioctl accounts for about 84% of the 3.17s CPU increase. In the pinned tcell v2.13.8 source, every `Show()` calls `resize()`, which queries `WindowSize()` even when dimensions are unchanged. Drawing only a pane would retain this cost. Pump/channel functions do not appear among sampled CPU hotspots; the 2.99s attributed to the pump's queued draw is downstream drawing and flushing.
+
+Exact controlled-window repaint counts are unavailable: the controlled relaunches did not enable `ARGUS_TYPING_LOG`, and no `[repaint]` records follow the original After shutdown. Earlier, separately labeled 8ms busy-split telemetry reports 1,177 output-driven frames in 30 seconds (39.23/s) at 12:27:46, with other busy windows around 38–44/s. The producer's 25 lines/s does not establish the number of actual redraws.
+
+The proposed next experiment is a small `tcell.Tty` wrapper caching `WindowSize` for up to 100ms, invalidating before resize callbacks and on start/resume. A bounded fallback retains missed-notification recovery; normal Clear/Draw/Show and the existing repair Sync calls remain intact. Saving 1.3s of ioctl CPU would put the observed total near 16.6% of one core, within the guard; approaching BASE's ioctl cost suggests roughly 10–11%. These are estimates, not measurements or an approved implementation. Coordinator direction is required before code changes.
+
+Coordinator approval added this cache to PR 1, retaining the 8ms cap. Aaron then amended the proposed TTL from 100ms to 1 second: the TTL is only a missed-notification backstop, and the estimated 3.3ms ioctl cost would otherwise retain roughly three CPU points at ten queries per second. Invalidation before resize callbacks and Start/Stop/resume remains mandatory. The approved candidate requires a fresh controlled BUSY measurement with `ARGUS_TYPING_LOG=1`, then an IDLE check only if BUSY is at most 17.38%.
+
 ### Operator steps
 
 The coordinator approved completing the remaining Before and After typing and busy CPU captures back-to-back. Keep the same terminal size and daemon/supervisor deployment, and choose **Skip/Esc** in both skew modals. Close only the TUI between runs.

@@ -2,7 +2,7 @@
 
 ### Requirement: Visible terminal panes repaint when output arrives
 
-The TUI SHALL repaint when output arrives for a session shown in a terminal pane that was drawn in the most recent frame, covering the Tasks agent view pane and both Hera panes. It SHALL NOT rely on a timer to paint that output. Repaints SHALL be coalesced under a minimum frame interval of about 8ms, and at most one such repaint SHALL be queued at a time. The output notification SHALL NOT block the session's stream reader. This mechanism SHALL NOT call `screen.Sync()`.
+The TUI SHALL repaint when output arrives for a session shown in a terminal pane that was drawn in the most recent frame, covering the Tasks agent view pane and both Hera panes. It SHALL NOT rely on a timer to paint that output. Repaints SHALL be coalesced under a minimum frame interval of about 8ms, and at most one such repaint SHALL be queued at a time. The first output after a quiet period SHALL queue a repaint immediately. The output notification SHALL NOT block the session's stream reader. This mechanism SHALL NOT call `screen.Sync()`.
 
 #### Scenario: Echo paints without waiting for a timer
 
@@ -43,6 +43,35 @@ The TUI SHALL repaint when output arrives for a session shown in a terminal pane
 
 - **WHEN** a session shown in a visible pane ends
 - **THEN** one repaint is queued so the finished state appears without waiting for the tick
+
+### Requirement: Terminal size queries are bounded without delaying resize notifications
+
+The TUI's terminfo TTY SHALL cache successful terminal size queries for at most 1 second, retaining normal screen clearing, drawing and flushing. It SHALL invalidate the cache before forwarding a resize notification and on Start, resume and Stop. Failed size queries SHALL pass through unchanged and SHALL NOT be cached. Cache access and invalidation SHALL be safe across concurrent drawing and resize notifications. The cache SHALL NOT change daemon or supervisor protocols.
+
+#### Scenario: Repeated frames reuse a size query
+
+- **WHEN** multiple frames flush within 1 second without a resize notification or lifecycle change
+- **THEN** they reuse one successful terminal size query
+
+#### Scenario: Resize invalidates before its callback
+
+- **WHEN** the TTY delivers a resize notification
+- **THEN** a size query from the forwarded callback observes a fresh underlying query
+
+#### Scenario: A missing notification recovers within the TTL
+
+- **WHEN** terminal dimensions change without a resize notification
+- **THEN** a query at or after 1 second fetches fresh dimensions
+
+#### Scenario: Lifecycle changes discard cached dimensions
+
+- **WHEN** the TTY starts, resumes through Start, or stops
+- **THEN** subsequent size queries cannot reuse dimensions cached before that operation
+
+#### Scenario: A failed query is retried
+
+- **WHEN** the underlying size query returns an error
+- **THEN** that result is returned unchanged and the next query reaches the underlying TTY again
 
 ### Requirement: Keystroke-to-paint latency is logged
 

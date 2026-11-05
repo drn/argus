@@ -1564,21 +1564,15 @@ func (a *App) Run() error {
 	// Wrap the tcell screen in lazyScreen. The wrapper is a passthrough
 	// today; keeping the indirection lets smoke tests inject a
 	// SimulationScreen through the same path production uses.
-	rawScreen, err := tcell.NewScreen()
+	rawScreen, err := cachedTerminalScreen(tcell.NewDevTty, tcell.NewTerminfoScreenFromTty)
 	if err != nil {
 		return err
 	}
-	a.screen = &lazyScreen{Screen: rawScreen}
-	if a.typing != nil {
-		a.screen.onShow = a.typing.flushed
-	}
-	a.tapp.SetScreen(a.screen)
 	// EnableMouse/EnablePaste must be called AFTER SetScreen. tview's
 	// EnablePaste only calls screen.EnablePaste() when a.screen is non-nil,
 	// and Run() only auto-enables when it creates its own screen. Calling
 	// these before SetScreen stores the flag but never applies it.
-	a.tapp.EnableMouse(true)
-	a.tapp.EnablePaste(true)
+	a.setTerminalScreen(rawScreen)
 	// Focus reporting (DECSET 1004): tmux/iTerm2 forward focus events to
 	// the foreground process. On focus regain we call screen.Sync()
 	// directly to repair any drift that accumulated while we were
