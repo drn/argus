@@ -86,6 +86,10 @@ The two Oct 30 shapes (`devbox run -- mysqld --datadir=<wt>/tmp/mysql-data` and 
 - **Re-read before each stop and escalation, 30s kill grace.** Stops run sequentially and can each take up to ~32s, so state is re-read right before each stop and via `StopOptions.Proceed` before the direct SIGTERM round and before SIGKILL; `StopOptions.Cancel` (daemon shutdown) aborts any grace wait without further signals. The sweeper keeps the worktree and a resume reuses the datadir, hence 30s instead of removal's 5s.
 - **Logging.** Signals, refusals and scan failures go through `slog` (the daemon's real trail) as well as uxlog.
 
+### D14. Accepted edge: the resume gap widens to the length of the sweeper's busy time (re-review)
+
+The D3 gap ("a resumed session that starts and exits entirely between two ticks is not noticed") is no longer 10s. The loop is single-threaded and each stop can take ~32s or more (2s supervisor grace + 30s kill grace), so no tick runs while an earlier worktree is being stopped; a task resumed and exited entirely within that window is never exempted and is stopped later in the same tick. Observed in a probe (task B resumed and exited during A's stop, then stopped). Accepted: it is rare, and it fails toward stopping a stack that can simply be restarted. No code change.
+
 ## Risks / Trade-offs
 
 - A user who starts a stack by hand on a finished task without resuming a session loses it (D11). Mitigated by the setting and D3.

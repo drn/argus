@@ -1017,3 +1017,8 @@ func TestC_RunningChecked(t *testing.T) {
 	testutil.Nil(t, ids)
 	testutil.Nil(t, c.Running()) // the lossy variant still folds the error to nil
 }
+
+// The dev-stack sweeper picks the error-reporting path by this interface; if
+// Client.RunningChecked is renamed or its signature changes, this stops
+// compiling instead of silently reverting to "RPC failure reads as no sessions".
+var _ daemon.RunningChecker = (*Client)(nil)

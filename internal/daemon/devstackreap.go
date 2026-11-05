@@ -258,11 +258,20 @@ func (r *devStackReaper) tick() []string {
 	return stopped
 }
 
+// RunningChecker is the optional runner capability the sweeper needs: a
+// running-session list that distinguishes "none" from "could not ask". The
+// supervisor client implements it; a compile-time assertion in the client
+// package's tests pins that, so renaming the method cannot silently revert the
+// sweeper to reading an RPC failure as "no sessions".
+type RunningChecker interface {
+	RunningChecked() ([]string, error)
+}
+
 // runningFn adapts d.runner: the supervisor client reports an RPC failure
 // (which must skip the tick, not read as "no sessions"); the in-process runner
 // cannot fail.
 func runningFn(runner agent.SessionRunner) func() ([]string, error) {
-	if rc, ok := runner.(interface{ RunningChecked() ([]string, error) }); ok {
+	if rc, ok := runner.(RunningChecker); ok {
 		return rc.RunningChecked
 	}
 	return func() ([]string, error) { return runner.Running(), nil }
