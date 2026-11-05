@@ -92,6 +92,34 @@ func (d *DB) Tasks() ([]*model.Task, error) {
 	return tasks, nil
 }
 
+// TasksChecked is Tasks for callers that act destructively on the result: a
+// row that fails to scan, or an iteration error, is returned as an error
+// instead of being silently dropped. A partial list can lose an unfinished
+// task and make its shared worktree look finished.
+func (d *DB) TasksChecked() ([]*model.Task, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("query tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*model.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan task: %w", err)
+		}
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tasks: %w", err)
+	}
+	return tasks, nil
+}
+
 func (d *DB) Add(t *model.Task) error {
 	if err := d.addLocked(t); err != nil {
 		return err

@@ -144,9 +144,14 @@ func (e ExitInfo) CleanExit() bool {
 // mutex, exactly as before the extraction.
 type Daemon struct {
 	*sessionCore
-	db                 *db.DB
-	listener           net.Listener
-	done               chan struct{}
+	db       *db.DB
+	listener net.Listener
+	done     chan struct{}
+
+	// devStackScan / devStackStop override the dev-stack sweeper's process scan
+	// and stop (nil = the real agent functions). Test seams, set before Serve.
+	devStackScan       func() ([]agent.DevStackProc, error)
+	devStackStop       func(worktree string, o agent.StopOptions)
 	shutdownOnce       sync.Once     // closes done exactly once across concurrent Shutdown callers
 	ready              chan struct{} // closed when Serve has set listener (or failed)
 	sockPath           string        // set by Serve, used by cleanup

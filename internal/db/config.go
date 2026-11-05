@@ -19,6 +19,15 @@ import (
 // write, since Config() only ever reads this spelling.
 const ConfigKeyDefaultBackend = "defaults.backend"
 
+// ConfigFileErr returns the last error reading or parsing config.toml (nil when
+// the file is fine or simply absent; always nil for an in-memory DB). Config()
+// silently falls back to the defaults + DB values on a bad file, so a caller
+// that must not act on a fallback (an automatic kill gated by a config.toml
+// switch) checks this right after Config().
+func (d *DB) ConfigFileErr() error {
+	return d.cfgLoader.Err()
+}
+
 func (d *DB) Config() config.Config {
 	cfg := config.DefaultConfig()
 

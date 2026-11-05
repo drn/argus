@@ -77,6 +77,15 @@ A person who starts a dev stack by hand in the worktree of a `complete`/archived
 
 The two Oct 30 shapes (`devbox run -- mysqld --datadir=<wt>/tmp/mysql-data` and a launchd-parented `mysqld`) are verified by parser tests only. Live confirmation against real processes is a post-deploy step (e.g. `argus doctor` listing them).
 
+### D13. Review hardening (PR #1109 review)
+
+- **Verify before signaling (D4 addendum).** pgrep output is line-based but argv can hold raw newlines (an agent's multi-line prompt), so a scanned entry can be a phantom PID. Immediately before every signal (SIGTERM and SIGKILL, sweeper and removal) the PID's own argv is re-read (`ps -ww -p <pid> -o command=`), re-classified, and its worktree compared; failure/gone/mismatch means no signal and a logged refusal. Scan lines over 64 KiB are handled (16 MiB hard cap) and a scanner error is a failed scan.
+- **Wrapper shapes (D4 addendum).** `mysqld_safe` is a supervisor (it respawns `mysqld`); `devbox run mysqld` and `devbox run -- env A=1 mysqld` are accepted. `sh -c ...` is deliberately not matched: its child matches directly.
+- **Everything the sweeper reads can fail and a failed tick changes no state.** Task rows via `db.TasksChecked` (scan/iteration errors are errors), live sessions via the client's `RunningChecked` (no wire change: same `ListSessions` RPC, the error is just no longer folded to an empty list; the in-process runner cannot fail), and config via `db.ConfigFileErr()` read right after `Config()`. A failed tick returns before touching `ticked`, exemptions, known sessions or counters (counters held).
+- **Unparseable config.toml stops nothing.** The loader falls back to defaults (on) on a parse error, so `stop_finished = false` plus a typo would silently re-arm the kill. Decision: unknown setting = no stops, logged once per distinct error.
+- **Re-read before each stop and escalation, 30s kill grace.** Stops run sequentially and can each take up to ~32s, so state is re-read right before each stop and via `StopOptions.Proceed` before the direct SIGTERM round and before SIGKILL; `StopOptions.Cancel` (daemon shutdown) aborts any grace wait without further signals. The sweeper keeps the worktree and a resume reuses the datadir, hence 30s instead of removal's 5s.
+- **Logging.** Signals, refusals and scan failures go through `slog` (the daemon's real trail) as well as uxlog.
+
 ## Risks / Trade-offs
 
 - A user who starts a stack by hand on a finished task without resuming a session loses it (D11). Mitigated by the setting and D3.
