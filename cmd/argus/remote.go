@@ -117,6 +117,7 @@ func runRemoteTUI(baseURL, token string) {
 	})
 
 	app := tui.New(store, provider, true)
+	app.EnableTypingLog(os.Getenv("ARGUS_TYPING_LOG") == "1")
 	appRef = app
 
 	// Periodic config refresh — the remote daemon may change settings (e.g.

@@ -67,6 +67,8 @@ type HeraPage struct {
 
 	// Keys returns the live keymap (set by the App). Nil-safe via keys().
 	Keys func() *keymap.Keymap
+	// OnForwardKey starts optional timing; the returned callback marks WriteInput completion.
+	OnForwardKey func(*terminal.TerminalPane, *tcell.EventKey, time.Time) func()
 
 	rail      *Rail
 	focus     *FocusMachine

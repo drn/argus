@@ -522,6 +522,7 @@ type App struct {
 
 	// Tick control
 	tickDone            chan struct{}
+	typing              *typingTracker
 	tickCallbackPending atomic.Bool          // debounce: skip enqueue if prior callback hasn't run
 	startGen            atomic.Uint64        // double-bumped by startSession (before+after Start RPC); tick captures before its RPC and skips reconciliation on mismatch
 	recentStarts        map[string]time.Time // task ID → time of last startSession; grace period prevents false reconciliation
@@ -1200,6 +1201,9 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	}
 	a.reconcilePluginViewSize()
 	a.publishInitialPTYLayout(screen)
+	if a.typing != nil {
+		a.typing.reconcile(a.agentPane, a.heraPage.CoordPane(), a.heraPage.AgentPane())
+	}
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
@@ -1556,6 +1560,9 @@ func (a *App) Run() error {
 		return err
 	}
 	a.screen = &lazyScreen{Screen: rawScreen}
+	if a.typing != nil {
+		a.screen.onShow = a.typing.flushed
+	}
 	a.tapp.SetScreen(a.screen)
 	// EnableMouse/EnablePaste must be called AFTER SetScreen. tview's
 	// EnablePaste only calls screen.EnablePaste() when a.screen is non-nil,
@@ -1591,6 +1598,7 @@ func (a *App) Run() error {
 	go a.tickLoop()
 	go a.spinnerLoop()
 	defer close(a.tickDone)
+	defer a.typing.close()
 
 	// If main detected the daemon's binary differs from ours, open the prompt
 	// directly. We can't use QueueUpdateDraw here: tview's QueueUpdate is
@@ -1721,6 +1729,10 @@ func (a *App) onTick() {
 	}
 	a.tapp.QueueUpdateDraw(func() {
 		a.tickCallbackPending.Store(false)
+		if a.typing != nil {
+			start := a.typing.now()
+			defer func() { a.typing.tick(start, a.typing.now()) }()
+		}
 		// Lock a.mu to protect App-level fields (mode, agentState,
 		// tasks, runningIDs) during refresh.
 		a.mu.Lock()
@@ -3998,6 +4010,10 @@ func (a *App) activeKeymap() *keymap.Keymap {
 }
 
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
+	var entered time.Time
+	if a.typing != nil {
+		entered = a.typing.now()
+	}
 	// Plugin-view mode — full surrender. While a plugin has the ball, argus
 	// reserves NO key for its own navigation: Esc, Ctrl+C, `?`, tab-switch
 	// numbers, focus-rail arrows — all forward to the plugin via the focused
@@ -4218,8 +4234,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.mode == modeAgent {
 			// Forward ctrl+c to the PTY if session is alive; otherwise ignore
 			if sess := a.agentPane.Session(); sess != nil && sess.Alive() {
+				var queued func()
+				if a.typing != nil {
+					queued = a.typing.forward(a.agentPane, event, entered, "tasks")
+				}
 				if _, err := sess.WriteInput([]byte{0x03}, agentview.OriginUser); err != nil {
 					uxlog.Log("[tui] write ctrl+c to PTY failed: %v", err)
+				}
+				if queued != nil {
+					queued()
 				}
 			}
 			return nil
@@ -4615,6 +4638,10 @@ func (a *App) returnToAgentView(ret *agentCrossReturn) bool {
 
 // handleAgentKey handles keys when the agent view is active.
 func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
+	var entered time.Time
+	if a.typing != nil {
+		entered = a.typing.now()
+	}
 	// Escape is structural (focus state machine + forward-to-PTY) and is NOT
 	// rebindable — handled before any keymap resolution.
 	if event.Key() == tcell.KeyEscape {
@@ -4632,8 +4659,15 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 		// When focused on terminal, forward escape to PTY if alive, otherwise consume it
 		if sess := a.agentPane.Session(); sess != nil && sess.Alive() {
+			var queued func()
+			if a.typing != nil {
+				queued = a.typing.forward(a.agentPane, event, entered, "tasks")
+			}
 			if _, err := sess.WriteInput([]byte{0x1b}, agentview.OriginUser); err != nil {
 				uxlog.Log("[tui] write escape to PTY failed: %v", err)
+			}
+			if queued != nil {
+				queued()
 			}
 			a.agentPane.ResetScroll()
 		}
@@ -4793,8 +4827,15 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	if sess != nil && sess.Alive() {
 		b := tcellKeyToBytes(event)
 		if len(b) > 0 {
+			var queued func()
+			if a.typing != nil {
+				queued = a.typing.forward(a.agentPane, event, entered, "tasks")
+			}
 			if _, err := sess.WriteInput(b, agentview.OriginUser); err != nil {
 				uxlog.Log("[tui] write to PTY failed: %v", err)
+			}
+			if queued != nil {
+				queued()
 			}
 			// Schedule a fast follow-up redraw to paint the PTY echo.
 			// The immediate tview draw (from returning nil) fires before

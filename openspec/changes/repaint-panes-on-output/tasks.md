@@ -1,20 +1,22 @@
 ## 1. Timing log (before-baseline commit)
 
-- [ ] 1.1 Read `context/knowledge/gotchas/ui-threading.md`, the repaint bullets in `gotchas/pty-terminal.md`, and `context/knowledge/testing.md`.
-- [ ] 1.2 Add the latency tracker in `internal/tui` with a failing test first. Cover total and part calculations, `stall_ms` intersection with tick closures, `no-echo` after 2 seconds, `overlap`, `quiet_ms`, and that no key content or length is logged. Read `ARGUS_TYPING_LOG` once at startup and pass the result in, so tests don't depend on the environment. Test that a nil tracker takes no timestamps and writes no lines.
-- [ ] 1.3 Add an output probe: a non-blocking `io.Writer`, attached through `AddWriterFrom` at the current total via an optional interface, that only records an atomic timestamp in this commit. Attach it only when the timing log is on.
-- [ ] 1.4 Record in `TerminalPane.Draw` that the pane painted, and how far it has fed its emulator. Reconcile probe subscriptions in `afterDraw` on the UI goroutine.
-- [ ] 1.5 Override `lazyScreen.Show` to delegate and then notify the tracker. Add a SimulationScreen smoke test because this touches the screen wrapper.
-- [ ] 1.6 Call the tracker from `handleAgentKey` and `HeraPage.forwardKey`, using `EventKey.When()` as the start time.
-- [ ] 1.7 When the timing log is on, time the tick closure in `onTick`, feed closure intervals to the tracker, and log `[tick]` at 16ms or longer.
+- [x] 1.1 Read `context/knowledge/gotchas/ui-threading.md`, the repaint bullets in `gotchas/pty-terminal.md`, and `context/knowledge/testing.md`.
+- [x] 1.2 Add the latency tracker in `internal/tui` with a failing test first. Cover total and part calculations, `stall_ms` intersection with tick closures, `no-echo` after 2 seconds, `overlap`, `quiet_ms`, and that no key content or length is logged. Read `ARGUS_TYPING_LOG` once at startup and pass the result in, so tests don't depend on the environment. Test that a nil tracker takes no timestamps and writes no lines.
+- [x] 1.3 Add an output probe: a non-blocking `io.Writer`, attached through `AddWriterFrom` at the current total via an optional interface, that only records an atomic timestamp in this commit. Attach it only when the timing log is on.
+- [x] 1.4 Record in `TerminalPane.Draw` that the pane painted, and how far it has fed its emulator. Reconcile probe subscriptions in `afterDraw` on the UI goroutine.
+- [x] 1.5 Override `lazyScreen.Show` to delegate and then notify the tracker. Add a SimulationScreen smoke test because this touches the screen wrapper.
+- [x] 1.6 Call the tracker from `handleAgentKey` and `HeraPage.forwardKey`, using `EventKey.When()` as the start time.
+- [x] 1.7 When the timing log is on, time the tick closure in `onTick`, feed closure intervals to the tracker, and log `[tick]` at 16ms or longer.
 
 ## 2. Latency tool and baseline
 
-- [ ] 2.1 Add `internal/latencyreport` with tests: parse `[typing]` lines, compute per-pane percentiles for all and quiet samples, count `no-echo`, filter by time range, and detect stall runs from goroutine dumps.
-- [ ] 2.2 Add `cmd/argus-latency` with `report` (`--since`, `--until`, `--last`, `--log`) and `stalls` (`--addr`, `--duration`, `--interval`). Add its `main.go` to `coverage-ignore.txt` with the reason.
-- [ ] 2.3 Run `make pre-pr`, commit the timing log and tool as their own commit, and push with `iris_push`.
+- [x] 2.1 Add `internal/latencyreport` with tests: parse `[typing]` lines, compute per-pane percentiles for all and quiet samples, count `no-echo`, filter by time range, and detect stall runs from goroutine dumps.
+- [x] 2.2 Add `cmd/argus-latency` with `report` (`--since`, `--until`, `--last`, `--log`) and `stalls` (`--addr`, `--duration`, `--interval`). Add its `main.go` to `coverage-ignore.txt` with the reason.
+- [x] 2.3 Run `make pre-pr`, commit the timing log and tool as their own commit, and push with `iris_push`.
 - [ ] 2.4 Follow "Before capture" and "Capture window" in `design.md`: build the baseline binary outside the repository, send `hera_send(status="blocked")` with its path, and wait. Do not use `iris_set_dogfood`, `iris_publish` or `iris_reload`.
 - [ ] 2.5 Write the results to `measurements.md` under "Before" and commit. Do not start group 3 until this is committed.
+
+Baseline verification: `make pre-pr` was run in full; Go 1.26.8's 11 standard-library vulnerabilities stopped its advisory-in-CI `vuln` step. Per coordinator approval, build/vet/format/lint and the complete race/coverage gate were rerun on Go 1.26.8 with `GOFLAGS=-p=3` and inherited `CODEX_HOME`/`CODEX_SQLITE_HOME` removed so tests use fixture homes. All passed, with 0 lint issues and 88.9% filtered coverage. `openspec validate --all --strict` passed all 78 items. No repository toolchain setting changed.
 
 ## 3. Output-driven repaint (repaint commit)
 

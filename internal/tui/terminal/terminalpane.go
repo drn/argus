@@ -230,6 +230,9 @@ type cachedCell struct {
 // No activeInputBG or findInputRow — the native surface shows upstream
 // PTY output without Argus-injected highlights.
 type TerminalPane struct {
+	// Frame observations are owned by the UI goroutine and consumed afterDraw.
+	painted      bool
+	paintedTotal uint64
 	*tview.Box
 	mu      sync.Mutex
 	session agentview.TerminalAdapter
@@ -1851,6 +1854,8 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		tp.renderDiff(screen, x, y, width, height)
 		return
 	}
+	tp.painted = true
+	tp.paintedTotal = 0
 
 	tp.mu.Lock()
 	sess := tp.session
@@ -2113,6 +2118,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		// renderLive fetches the buffer internally, only when new bytes
 		// have arrived — avoids a 256KB ring buffer copy on every draw.
 		tp.renderLive(screen, x, y, width, height, ptyCols, ptyRows)
+		tp.paintedTotal = tp.emuFedTotal
 	}
 }
 

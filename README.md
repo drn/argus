@@ -565,6 +565,12 @@ It is strictly **read-only** (never touches a symlink, binary, `PATH`, or proces
 
 `doctor` also lists dev stacks (see `[devstack]` below) still running in the worktree of a finished task — **FOUND**, **NONE FOUND**, or **UNKNOWN** (process scan or task lookup unavailable). Advisory only: it never affects the exit code and never stops anything.
 
+### Typing latency diagnostics
+
+Launch the TUI with `ARGUS_TYPING_LOG=1 argus` to write keystroke timing and slow tick lines to `~/.argus/ux.log`. Input content and length are never logged. Normal launches leave this diagnostic off.
+
+Run `go run ./cmd/argus-latency report --last 10m` for per-pane percentiles, including a separate quiet population (`quiet_ms >= 50`, no overlapping key). Use `--since` and `--until` with RFC3339 timestamps, or `--log` for a saved capture. `go run ./cmd/argus-latency stalls --duration 30s` samples the TUI's pprof listener on port 6061; goroutine dumps add overhead, so compare captures under similar load.
+
 ### Auto-start at Login (macOS)
 
 Toggle from **Settings → Status → Auto-start at login** (Enter), or use the CLI:

@@ -28,6 +28,15 @@ type lazyScreen struct {
 	// screen.Sync() directly — repair-screen-damage per tcell's intended
 	// use of Sync (see gdamore/tcell issue #647).
 	onFocusGained func()
+	// onShow runs on the UI goroutine after tcell has flushed the frame.
+	onShow func()
+}
+
+func (l *lazyScreen) Show() {
+	l.Screen.Show()
+	if l.onShow != nil {
+		l.onShow()
+	}
 }
 
 func (l *lazyScreen) PollEvent() tcell.Event {
