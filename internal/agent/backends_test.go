@@ -235,13 +235,13 @@ func TestBackendSandboxRules(t *testing.T) {
 func TestBackendSandboxRules_LaunchOnlyGrants(t *testing.T) {
 	for _, launching := range []*Family{nil, FamilyForKind(backendkind.Claude), customFamily} {
 		rules := backendSandboxRules(launching)
-		if strings.Contains(rules, "/.gemini") || strings.Contains(rules, "/.cursor") {
+		if strings.Contains(rules, "/.gemini") || strings.Contains(rules, "/.cursor") || strings.Contains(rules, `"/.omp"`) {
 			t.Fatalf("launch-only grants leaked into another profile: %v", launching)
 		}
 		testutil.Contains(t, rules, `"/.codex"`)
 	}
 	for _, f := range Families() {
-		testutil.Equal(t, f.SandboxGrantsLaunchOnly, f.Kind == backendkind.Antigravity || f.Kind == backendkind.Cursor)
+		testutil.Equal(t, f.SandboxGrantsLaunchOnly, f.Kind == backendkind.Antigravity || f.Kind == backendkind.Cursor || f.Kind == backendkind.Omp)
 	}
 }
 
@@ -472,7 +472,7 @@ func TestBuildCmd_PrecreatesGrantDirsOnlyForOptedInFamilies(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	cfg.Sandbox.Enabled = true
-	for _, backend := range []string{"antigravity", "cursor", "claude", "codex", "pi", "opencode"} {
+	for _, backend := range []string{"antigravity", "cursor", "claude", "codex", "pi", "opencode", "omp"} {
 		task := &model.Task{Backend: backend, Prompt: "p", Worktree: t.TempDir()}
 		_, _, err := BuildCmd(task, cfg, false)
 		testutil.NoError(t, err)

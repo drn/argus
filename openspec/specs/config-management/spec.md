@@ -344,3 +344,11 @@ The UI configuration SHALL provide `project_first`, default false, stored as `ui
 - **WHEN** Settings saves true or false and configuration is loaded again
 - **THEN** the effective project-first value matches the saved value under existing configuration precedence
 
+### Requirement: Built-in omp backend
+
+The default configuration SHALL include an `omp` backend with command `omp` and no prompt flag; existing databases receive it on next start.
+
+#### Scenario: Default backend present
+- **WHEN** the default config is built
+- **THEN** it contains a backend named `omp` classified as the omp family
+

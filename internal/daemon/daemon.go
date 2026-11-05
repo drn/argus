@@ -38,6 +38,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
+	"github.com/drn/argus/internal/sandboxprop"
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/usagebudget"
 
@@ -1470,16 +1471,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
 		mcpSrv.SetTaskManager(
 			func(input mcp.TaskCreateInput) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
-					Name:             input.Name,
-					Prompt:           input.Prompt,
-					Project:          input.Project,
-					Model:            input.Model,
-					AutoName:         input.AutoName,
-					BaseBranch:       input.BaseBranch,
-					Account:          input.Account,
-					InheritedAccount: input.InheritedAccount,
-				})
+				return HeadlessCreateTask(d.db, d.runner, headlessInputFromMCP(input))
 			},
 			d.db,
 			d.runner,
@@ -1492,6 +1484,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			return taskRecycler.Recycle(in.TaskID, in.HandoffNote)
 		})
 		mcpSrv.SetClipboard(d.clipboard)
+		mcpSrv.SetSandboxProposer(sandboxprop.Proposer{DB: d.db})
 		mcpSrv.SetScheduleManager(d.db, sch)
 		mcpSrv.SetMessageManager(d.db, runnerNudger{notifier: d.notifier})
 		// Gate on cfg.Hera.Enabled: when disabled, the native hera_* tools are
@@ -1859,4 +1852,20 @@ func removeIfOwnedByPID(sockPath, pidPath string, ourPID int) {
 	}
 	os.Remove(sockPath)
 	os.Remove(pidPath)
+}
+
+// headlessInputFromMCP maps an MCP task_create request onto the daemon's
+// headless creation input.
+func headlessInputFromMCP(input mcp.TaskCreateInput) HeadlessInput {
+	return HeadlessInput{
+		Name:             input.Name,
+		Prompt:           input.Prompt,
+		Project:          input.Project,
+		Model:            input.Model,
+		AutoName:         input.AutoName,
+		BaseBranch:       input.BaseBranch,
+		Account:          input.Account,
+		InheritedAccount: input.InheritedAccount,
+		SandboxOverride:  input.SandboxOverride,
+	}
 }

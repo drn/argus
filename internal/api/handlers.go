@@ -96,6 +96,12 @@ type taskJSON struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Idle   bool   `json:"idle,omitempty"`
+	// Live is true when Status == in_progress and the runner holds a real
+	// session for the task, including one parked idle at a prompt, and no
+	// kill+resume restart is pending. Idle alone cannot say whether input can
+	// reach a PTY, so clients use Live. Deliberately NOT omitempty: an absent
+	// field means an older daemon, and clients fall back to !idle.
+	Live bool `json:"live"`
 	// NeedsInput is a runtime-derived flag, true only when Status ==
 	// in_progress and the daemon's watcher detected the agent is blocked
 	// waiting on the user (the red ? in the TUI). omitempty drops the field
@@ -123,6 +129,7 @@ type taskJSON struct {
 // doesn't grow into a positional bool chain when more flags are added.
 type taskRuntimeState struct {
 	Idle       bool
+	Live       bool
 	NeedsInput bool
 	// PRState is the cached PR review state string ("awaiting-review", etc.)
 	// from task_meta namespace "pr". Empty / "none" maps to an omitted DTO
@@ -137,6 +144,7 @@ func taskToJSON(t *model.Task, rt taskRuntimeState) taskJSON {
 		Name:         t.Name,
 		Status:       t.Status.String(),
 		Idle:         rt.Idle,
+		Live:         rt.Live,
 		NeedsInput:   rt.NeedsInput,
 		Project:      t.Project,
 		Branch:       t.Branch,
@@ -171,8 +179,21 @@ func computeRuntimeState(t *model.Task, runningSet, idleSet, needsInputSet map[s
 	}
 	return taskRuntimeState{
 		Idle:       !runningSet[t.ID] || idleSet[t.ID],
+		Live:       runningSet[t.ID],
 		NeedsInput: needsInputSet[t.ID],
 	}
+}
+
+// runtimeState wraps computeRuntimeState with the one signal the pure maps
+// can't carry: RunningAndIdle lists a pending-restart task as running even
+// though runner.Get is nil for it (stream, input and resize all 404). Such a
+// task is mid kill+resume and must not report Live.
+func (s *Server) runtimeState(t *model.Task, runningSet, idleSet, needsInputSet map[string]bool) taskRuntimeState {
+	rt := computeRuntimeState(t, runningSet, idleSet, needsInputSet)
+	if rt.Live && s.runner.HasPendingRestart(t.ID) {
+		rt.Live = false
+	}
+	return rt
 }
 
 func (s *Server) sessionStateMaps() (runningSet, idleSet, needsInputSet map[string]bool) {
@@ -243,7 +264,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		if projectFilter != "" && t.Project != projectFilter {
 			continue
 		}
-		rt := computeRuntimeState(t, runningSet, idleSet, needsInputSet)
+		rt := s.runtimeState(t, runningSet, idleSet, needsInputSet)
 		if kv := prMeta[t.ID]; kv != nil {
 			rt.PRState = kv["state"]
 		}
@@ -263,7 +284,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runningSet, idleSet, needsInputSet := s.sessionStateMaps()
-	rt := computeRuntimeState(task, runningSet, idleSet, needsInputSet)
+	rt := s.runtimeState(task, runningSet, idleSet, needsInputSet)
 	// Pure cache read of the daemon-written PR state; never shells out to gh.
 	if entries, merr := s.db.ListMeta(task.ID, "pr"); merr == nil {
 		for _, e := range entries {
@@ -319,12 +340,7 @@ func (s *Server) validateAccount(name, backend string) error {
 // for anything else, so a malformed value is rejected at the API boundary
 // instead of silently resolving as "inherit".
 func validateSandboxOverride(v string) error {
-	switch v {
-	case "", "enabled", "disabled":
-		return nil
-	default:
-		return fmt.Errorf("sandbox_override %q is not one of \"\", \"enabled\", \"disabled\"", v)
-	}
+	return model.ValidateSandboxOverride(v)
 }
 
 type createTaskReq struct {
@@ -618,6 +634,12 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 		// sites that share the same pattern.
 		if sess := s.runner.Get(task.ID); sess != nil && !sess.IsIdle() {
 			writeErr(w, http.StatusConflict, "task already running", nil)
+			return
+		}
+		// A daemon-initiated rerender restart is already bringing the session
+		// back; starting a second one here races it.
+		if s.runner.HasPendingRestart(task.ID) {
+			writeErr(w, http.StatusConflict, "agent is restarting", nil)
 			return
 		}
 	}

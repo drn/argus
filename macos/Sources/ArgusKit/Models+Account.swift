@@ -96,7 +96,7 @@ public enum NewTaskAccount {
         }
         switch backend.lowercased() {
         case "codex": return .codex
-        case "pi", "opencode", "antigravity": return .other
+        case "pi", "opencode", "antigravity", "omp": return .other
         default: return .claude
         }
     }

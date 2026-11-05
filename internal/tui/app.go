@@ -7146,6 +7146,12 @@ func (a *App) handleCopyChoiceKey(event *tcell.EventKey) {
 			uxlog.Log("[tui] copied prompt to clipboard: task %s (%s)", taskID, taskName)
 		})
 		a.closeCopyChoiceModal()
+	case modal.CopyID:
+		taskID, taskName := a.copyChoiceTask.ID, a.copyChoiceTask.Name
+		a.copyToClipboard(taskID, "ID copied", func() {
+			uxlog.Log("[tui] copied id to clipboard: task %s (%s)", taskID, taskName)
+		})
+		a.closeCopyChoiceModal()
 	case modal.CopyNone:
 		// Still open — no selection yet.
 	}

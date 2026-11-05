@@ -36,13 +36,22 @@ func TestCopyChoiceModal_Decisions(t *testing.T) {
 
 	t.Run("cursor clamps at bounds", func(t *testing.T) {
 		m := NewCopyChoiceModal("Copy", true)
-		// Two down moves on a 2-item list lands (and stays) on the last item.
-		m.InputHandler()(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
-		m.InputHandler()(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+		// Extra down moves on a 3-item list land (and stay) on the last item.
+		for range 5 {
+			m.InputHandler()(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+		}
 		m.InputHandler()(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
-		testutil.Equal(t, m.Selected(), CopyPrompt)
+		testutil.Equal(t, m.Selected(), CopyID)
 	})
 
+	t.Run("last row selects id", func(t *testing.T) {
+		m := NewCopyChoiceModal("Copy", true)
+		for range 3 {
+			m.InputHandler()(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+		}
+		m.InputHandler()(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, m.Selected(), CopyID)
+	})
 	t.Run("esc cancels", func(t *testing.T) {
 		m := NewCopyChoiceModal("Copy", true)
 		m.InputHandler()(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
@@ -61,10 +70,10 @@ func TestCopyChoiceModal_PromptUnavailable(t *testing.T) {
 	noFocus := func(tview.Primitive) {}
 	m := NewCopyChoiceModal("Copy", false)
 
-	// Only Name is offered; pressing down cannot reach a prompt choice.
+	// Only Name and ID are offered; one down lands on ID, never a prompt.
 	m.InputHandler()(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
 	m.InputHandler()(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, m.Selected(), CopyName)
+	testutil.Equal(t, m.Selected(), CopyID)
 }
 
 func TestCopyChoiceModal_DrawNoPanic(t *testing.T) {

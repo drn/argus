@@ -19,6 +19,7 @@ import (
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/sandboxprop"
 	"github.com/drn/argus/internal/todo"
 )
 
@@ -60,6 +61,10 @@ type TaskCreateInput struct {
 	// than chosen explicitly; an account that cannot run the backend fails the
 	// call instead of falling back (agent.CreateInput.InheritedAccount).
 	InheritedAccount bool
+
+	// SandboxOverride is the per-task sandbox tri-state: "" inherits the
+	// project / global default, "enabled" / "disabled" force it.
+	SandboxOverride string
 }
 
 // HeraSpawnInput is the payload the MCP hera_spawn_worker arm hands to the
@@ -174,6 +179,13 @@ type ClipboardSetter interface {
 	Set(taskID, text string) error
 }
 
+// SandboxProposer records pending sandbox write-path proposals. It is
+// deliberately propose-only: nothing reachable through MCP can approve,
+// reject, or apply a proposal.
+type SandboxProposer interface {
+	Propose(task *model.Task, items []sandboxprop.Item) (*sandboxprop.ProposeResult, error)
+}
+
 // ScheduleStore provides read+write access to scheduled tasks. The signature
 // matches *db.DB so the daemon passes its DB handle directly.
 type ScheduleStore interface {
@@ -209,6 +221,7 @@ type Server struct {
 	taskStopper TaskStopper
 	taskRecycle TaskRecycler    // optional; set via SetTaskRecycler
 	clipboard   ClipboardSetter // optional; set via SetClipboard
+	sandboxProp SandboxProposer // optional; set via SetSandboxProposer
 	schedDB     ScheduleStore   // optional; set via SetScheduleManager
 	schedRunner ScheduleRunner  // optional; set via SetScheduleManager
 	messages    MessageStore    // optional; set via SetMessageManager
@@ -308,6 +321,12 @@ func (s *Server) SetTaskRecycler(recycler TaskRecycler) {
 // argus_clipboard_set tool.
 func (s *Server) SetClipboard(setter ClipboardSetter) {
 	s.clipboard = setter
+}
+
+// SetSandboxProposer enables the sandbox_propose_write_paths tool (requires
+// task management for cwd resolution).
+func (s *Server) SetSandboxProposer(p SandboxProposer) {
+	s.sandboxProp = p
 }
 
 // SetPluginRegistry wires the runtime plugin-tool registry (PR 4 of the
@@ -660,19 +679,22 @@ Orchestration: pass ` + "`base_branch`" + ` to branch off a non-default ref (sta
 
 Account: the new task inherits the calling task's account when the caller is identifiable (pass ` + "`caller_id`" + ` from ARGUS_TASK_ID, or ` + "`cwd`" + `). Pass ` + "`account`" + ` to choose one explicitly ("default" included); an inherited account that cannot run the backend fails the call.
 
+Sandbox: pass ` + "`sandbox_override`" + ` ("enabled" | "disabled") to force the new task's sandbox on or off; omit to inherit the project / global default. "disabled" requires an identified (` + "`caller_id`" + ` or ` + "`cwd`" + `), unsandboxed calling task — a sandboxed or unidentified caller is rejected.
+
 Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) and a non-archived task with the same (name, project) already exists, the call errors unless ` + "`upsert: true`" + ` is set — in which case the existing task is returned unchanged. This keeps an orchestrator that restarts mid-loop from double-firing sub-tasks.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"name":        map[string]interface{}{"type": "string", "description": "Task name (used for branch/worktree naming). Auto-generated from prompt if omitted; idempotency check is skipped for auto-generated names."},
-				"prompt":      map[string]interface{}{"type": "string", "description": "Instructions for the agent"},
-				"project":     map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
-				"base_branch": map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
-				"model":       map[string]interface{}{"type": "string", "description": "Optional. Model override for the agent session (e.g. 'sonnet', 'opus', 'gpt-6-sol', or a provider-qualified 'anthropic/claude-opus-4-5'). Delivered through the backend's supported mechanism: --model for claude/codex/pi/antigravity/cursor, child-only OPENCODE_CONFIG_CONTENT for opencode (which takes provider/model ids). Empty = the backend's configured default."},
-				"upsert":      map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
-				"account":     map[string]interface{}{"type": "string", "description": "Optional. Configured account to run the task under ('default' or a name from config.toml [accounts]). Omit to inherit the calling task's account (when caller_id or cwd identifies it), else the project / global default."},
-				"caller_id":   map[string]interface{}{"type": "string", "description": "Optional. The calling task's ID (ARGUS_TASK_ID); the new task inherits its account unless account is passed."},
-				"cwd":         map[string]interface{}{"type": "string", "description": "Optional. Caller's worktree path (use $PWD); identifies the calling task when caller_id is omitted."},
+				"name":             map[string]interface{}{"type": "string", "description": "Task name (used for branch/worktree naming). Auto-generated from prompt if omitted; idempotency check is skipped for auto-generated names."},
+				"prompt":           map[string]interface{}{"type": "string", "description": "Instructions for the agent"},
+				"project":          map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
+				"base_branch":      map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
+				"model":            map[string]interface{}{"type": "string", "description": "Optional. Model override for the agent session (e.g. 'sonnet', 'opus', 'gpt-6-sol', or a provider-qualified 'anthropic/claude-opus-4-5'). Delivered through the backend's supported mechanism: --model for claude/codex/pi/antigravity/cursor/omp, child-only OPENCODE_CONFIG_CONTENT for opencode (which takes provider/model ids). Empty = the backend's configured default."},
+				"upsert":           map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
+				"account":          map[string]interface{}{"type": "string", "description": "Optional. Configured account to run the task under ('default' or a name from config.toml [accounts]). Omit to inherit the calling task's account (when caller_id or cwd identifies it), else the project / global default."},
+				"caller_id":        map[string]interface{}{"type": "string", "description": "Optional. The calling task's ID (ARGUS_TASK_ID); the new task inherits its account unless account is passed."},
+				"cwd":              map[string]interface{}{"type": "string", "description": "Optional. Caller's worktree path (use $PWD); identifies the calling task when caller_id is omitted."},
+				"sandbox_override": map[string]interface{}{"type": "string", "description": "Optional. 'enabled' or 'disabled' forces the new task's sandbox; omit (or empty) to inherit the project / global default. 'disabled' is rejected unless caller_id or cwd identifies an unsandboxed calling task."},
 			},
 			"required": []string{"prompt", "project"},
 		},
@@ -953,6 +975,39 @@ This does NOT write directly to the OS clipboard — it stages text the user can
 	},
 }
 
+var sandboxProposalToolDefs = []Tool{
+	{
+		Name: "sandbox_propose_write_paths",
+		Description: `Ask the human to grant this task's project extra sandbox WRITE access to directories you hit "Operation not permitted" on (e.g. ~/.gem, ~/.cocoapods, ~/Library/Developer/Xcode/DerivedData). This only records a PENDING proposal: nothing changes until the user manually approves it in the Argus TUI, web app or macOS app, and an approved path applies only to NEW sessions (the user must restart the task). You cannot approve, apply, or check off a proposal yourself; read GET /api/sandbox/proposals via argus_api_get for its status.
+
+Batch every path you need into one call, each with a short reason. Paths must be absolute or start with ~/ (no .., no trailing junk). Sensitive locations (credentials, ~/.ssh, ~/.aws, ...) are accepted but flagged with a warning for the approver, so only ask for what you truly need. Pass ` + "`id`" + ` or ` + "`cwd`" + ` to identify the task.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"paths": map[string]interface{}{
+					"type":        "array",
+					"description": "Up to 20 requested write paths.",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"path":   map[string]interface{}{"type": "string", "description": "Absolute or ~/ path."},
+							"reason": map[string]interface{}{"type": "string", "description": "Why the task needs it (max 500 chars)."},
+						},
+						"required": []string{"path"},
+					},
+				},
+				"id":  map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
+				"cwd": map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
+			},
+			"required": []string{"paths"},
+		},
+	},
+}
+
+func (s *Server) sandboxProposalEnabled() bool {
+	return s.sandboxProp != nil && s.taskMgmtEnabled()
+}
+
 // taskMgmtEnabled returns true when all task management dependencies are wired.
 func (s *Server) taskMgmtEnabled() bool {
 	return s.createTask != nil && s.taskDB != nil && s.taskStopper != nil
@@ -997,7 +1052,7 @@ var scheduleToolDefs = []Tool{
 				"schedule":    map[string]interface{}{"type": "string", "description": "Cron expression. Mutually exclusive with run_once_at."},
 				"run_once_at": map[string]interface{}{"type": "string", "description": "RFC3339 UTC timestamp (e.g. \"2026-05-17T14:00:00Z\"). Must be in the future. Mutually exclusive with schedule."},
 				"backend":     map[string]interface{}{"type": "string", "description": "Optional backend override for this schedule (e.g. 'claude-haiku')."},
-				"model":       map[string]interface{}{"type": "string", "description": "Optional per-schedule model override (e.g. 'sonnet', 'opus', 'gpt-6-sol', or provider-qualified for opencode), delivered through the backend's supported mechanism at each fire (--model for claude/codex/pi/antigravity/cursor, child-only OPENCODE_CONFIG_CONTENT for opencode). Empty = the backend's configured default."},
+				"model":       map[string]interface{}{"type": "string", "description": "Optional per-schedule model override (e.g. 'sonnet', 'opus', 'gpt-6-sol', or provider-qualified for opencode), delivered through the backend's supported mechanism at each fire (--model for claude/codex/pi/antigravity/cursor/omp, child-only OPENCODE_CONFIG_CONTENT for opencode). Empty = the backend's configured default."},
 				"enabled":     map[string]interface{}{"type": "boolean", "description": "Optional. Defaults to true."},
 			},
 			"required": []string{"name", "project", "prompt"},
@@ -1016,7 +1071,7 @@ var scheduleToolDefs = []Tool{
 				"schedule":    map[string]interface{}{"type": "string", "description": "Cron expression. Pass empty string to clear when switching to a one-shot."},
 				"run_once_at": map[string]interface{}{"type": "string", "description": "RFC3339 UTC timestamp. Pass empty string to clear when switching to a recurring schedule."},
 				"backend":     map[string]interface{}{"type": "string", "description": "Backend override (e.g. 'claude-haiku'). Empty string clears the override."},
-				"model":       map[string]interface{}{"type": "string", "description": "Per-schedule model override (e.g. 'sonnet', 'opus', 'gpt-6-sol', or provider-qualified for opencode), delivered through the backend's supported mechanism at each fire (--model for claude/codex/pi/antigravity/cursor, child-only OPENCODE_CONFIG_CONTENT for opencode). Empty string clears the override (falls back to the backend default)."},
+				"model":       map[string]interface{}{"type": "string", "description": "Per-schedule model override (e.g. 'sonnet', 'opus', 'gpt-6-sol', or provider-qualified for opencode), delivered through the backend's supported mechanism at each fire (--model for claude/codex/pi/antigravity/cursor/omp, child-only OPENCODE_CONFIG_CONTENT for opencode). Empty string clears the override (falls back to the backend default)."},
 				"enabled":     map[string]interface{}{"type": "boolean", "description": "Toggle on/off without resending the prompt. Re-enabling a one-shot whose RunOnceAt is in the past does NOT cause it to fire again — LastRunAt is the definitive guard."},
 			},
 			"required": []string{"id"},
@@ -1055,6 +1110,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	}
 	if s.clipboardEnabled() {
 		tools = append(tools, clipboardToolDefs...)
+	}
+	if s.sandboxProposalEnabled() {
+		tools = append(tools, sandboxProposalToolDefs...)
 	}
 	if s.taskRecycleEnabled() {
 		tools = append(tools, taskRecycleToolDefs...)
@@ -1152,6 +1210,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskRecycle(req.ID, params.Arguments)
 	case "argus_clipboard_set":
 		return s.toolClipboardSet(req.ID, params.Arguments)
+	case "sandbox_propose_write_paths":
+		return s.toolSandboxPropose(req.ID, params.Arguments)
 	case "schedule_list":
 		return s.toolScheduleList(req.ID, params.Arguments)
 	case "schedule_create":
@@ -1459,6 +1519,8 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		Account    string `json:"account"`
 		CallerID   string `json:"caller_id"`
 		Cwd        string `json:"cwd"`
+
+		SandboxOverride string `json:"sandbox_override"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -1467,6 +1529,12 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 	}
 	if p.Prompt == "" {
 		return toolError(id, "prompt is required")
+	}
+	sandboxOverride := strings.TrimSpace(p.SandboxOverride)
+	sandboxCaller, err := s.taskCreateSandboxOverride(sandboxOverride, p.CallerID, p.Cwd)
+	if err != nil {
+		log.Printf("[mcp] task_create rejected: %v", err)
+		return toolError(id, err.Error())
 	}
 	account, inherited, err := s.taskCreateAccount(strings.TrimSpace(p.Account), p.CallerID, p.Cwd)
 	if err != nil {
@@ -1514,6 +1582,9 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		if existing != nil {
 			s.createMu.Unlock()
 			if p.Upsert {
+				if sandboxOverride != "" && existing.Sandboxed != (sandboxOverride == "enabled") {
+					return toolError(id, fmt.Sprintf("existing task %s has sandboxed=%v, which conflicts with sandbox_override=%q (upsert does not change it)", existing.ID, existing.Sandboxed, sandboxOverride))
+				}
 				log.Printf("[mcp] task_create upsert hit: id=%s name=%q project=%q", existing.ID, name, p.Project)
 				return toolResult(id, formatTaskCreatedSummary(existing, "Task already exists (upsert)"))
 			}
@@ -1532,7 +1603,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		s.createMu.Unlock()
 	}()
 
-	log.Printf("[mcp] task_create name=%q project=%q auto=%v base=%q", name, p.Project, autoName, p.BaseBranch)
+	log.Printf("[mcp] task_create name=%q project=%q auto=%v base=%q sandbox_override=%q sandbox_caller=%q", name, p.Project, autoName, p.BaseBranch, sandboxOverride, sandboxCaller)
 	task, err := s.createTask(TaskCreateInput{
 		Name:             name,
 		Prompt:           p.Prompt,
@@ -1542,6 +1613,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		BaseBranch:       strings.TrimSpace(p.BaseBranch),
 		Account:          account,
 		InheritedAccount: inherited,
+		SandboxOverride:  sandboxOverride,
 	})
 	if err != nil {
 		log.Printf("[mcp] task_create failed: %v", err)
@@ -1550,6 +1622,34 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 
 	log.Printf("[mcp] task_create ok: id=%s name=%s status=%s", task.ID, task.Name, task.Status)
 	return toolResult(id, formatTaskCreatedSummary(task, "Task created"))
+}
+
+// taskCreateSandboxOverride validates task_create's sandbox_override and
+// returns the resolved caller's task ID when "disabled" required one. "disabled"
+// requires an identified, live, unsandboxed caller so a sandboxed agent cannot
+// spawn an unsandboxed one; unlike account inheritance, an unidentifiable
+// caller fails closed. The check keys off the creation-time Task.Sandboxed.
+func (s *Server) taskCreateSandboxOverride(override, callerID, cwd string) (string, error) {
+	if err := model.ValidateSandboxOverride(override); err != nil {
+		return "", err
+	}
+	if override != "disabled" {
+		return "", nil
+	}
+	if callerID == "" && cwd == "" {
+		return "", fmt.Errorf("sandbox_override \"disabled\" requires an identified calling task (pass caller_id or cwd)")
+	}
+	caller, err := s.resolveTask(callerID, cwd)
+	if err != nil {
+		return "", fmt.Errorf("sandbox_override \"disabled\" requires an identified calling task: %w", err)
+	}
+	if caller.Archived {
+		return "", fmt.Errorf("sandbox_override \"disabled\" requires a live calling task; %s is archived", caller.ID)
+	}
+	if caller.Sandboxed {
+		return "", fmt.Errorf("sandbox_override \"disabled\" is not allowed from sandboxed task %s", caller.ID)
+	}
+	return caller.ID, nil
 }
 
 // accountConfigSource is the optional Config() seam account validation uses;
@@ -2000,6 +2100,38 @@ func (s *Server) toolClipboardSet(id interface{}, args json.RawMessage) *Respons
 
 	log.Printf("[mcp] clipboard_set ok: id=%s bytes=%d", task.ID, len(p.Text))
 	return toolResult(id, fmt.Sprintf("Staged %d bytes for task %s (%s). The user will see a Copy button (PWA) or ctrl+y hint (TUI).", len(p.Text), task.ID, task.Name))
+}
+
+// toolSandboxPropose records a pending sandbox write-path proposal. It never
+// changes config; approval is a human-only REST/UI action.
+func (s *Server) toolSandboxPropose(id interface{}, args json.RawMessage) *Response {
+	if !s.sandboxProposalEnabled() {
+		return toolError(id, "sandbox proposals not configured")
+	}
+	var p struct {
+		Paths []sandboxprop.Item `json:"paths"`
+		ID    string             `json:"id"`
+		Cwd   string             `json:"cwd"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+	task, err := s.resolveTask(p.ID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	res, err := s.sandboxProp.Propose(task, p.Paths)
+	if err != nil {
+		log.Printf("[mcp] sandbox_propose_write_paths rejected: task=%s err=%v", task.ID, err)
+		return toolError(id, err.Error())
+	}
+	log.Printf("[mcp] sandbox_propose_write_paths ok: task=%s proposal=%s merged=%v", task.ID, res.Proposal.ID, res.Merged)
+	msg := fmt.Sprintf("Proposal %s is PENDING human approval (nothing has changed). Ask the user to approve it in Argus, then restart this task for the grant to apply. Check status via argus_api_get /api/sandbox/proposals/%s.", res.Proposal.ID, res.Proposal.ID)
+	if res.Merged {
+		msg = "An identical proposal was already pending. " + msg
+	}
+	if len(res.Warnings) > 0 {
+		msg += " Warnings shown to the approver: " + strings.Join(res.Warnings, "; ")
+	}
+	return toolResult(id, msg)
 }
 
 // --- todo tools ---

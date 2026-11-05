@@ -68,6 +68,7 @@ const (
 	srTodoTag
 	srBackendTier
 	srSandboxPath
+	srSandboxProposal
 	srAccountDefault
 	srAccount
 	srAccountField
@@ -277,6 +278,10 @@ type SettingsView struct {
 	editingSandboxIdx       int
 	editSandboxBuf          string
 	sandboxPathErr          string // last rejected-path reason, cleared on next edit
+	proposalList            []*db.SandboxProposal
+	proposalScopes          map[string]string
+	proposalMsg             string
+	proposalArmed           string
 	sandboxAllowAppleEvents []string
 
 	// KB.
@@ -559,6 +564,7 @@ func (sv *SettingsView) Refresh() {
 		sv.editingSandboxIdx = -1
 	}
 	sv.sandboxAllowAppleEvents = cfg.Sandbox.AllowAppleEvents
+	sv.loadProposals()
 
 	// Backends.
 	sv.defaultBackend = cfg.Defaults.Backend
@@ -1113,6 +1119,9 @@ func (sv *SettingsView) rebuildRows() {
 			label = "Enabled"
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srSandbox, label: label, key: "_sandbox"})
+		for _, p := range sv.proposalList {
+			sv.rows = append(sv.rows, settingsRow{kind: srSandboxProposal, label: proposalRowLabel(p, sv.proposalScope(p)), key: p.ID})
+		}
 		for i, p := range sv.sandboxExtraWrite {
 			if sv.editingSandboxIdx == i {
 				p = sv.editSandboxBuf + "▎"
@@ -2121,6 +2130,8 @@ func (sv *SettingsView) handleEnter() bool {
 		uxlog.Log("[settings] sandbox toggled to %s", val)
 		sv.rebuildRows()
 		return true
+	case srSandboxProposal:
+		return sv.handleApproveProposal()
 	case srSandboxPath:
 		return sv.handleEditSandboxPath()
 	case srAccountField:
@@ -2288,6 +2299,8 @@ func (sv *SettingsView) handleDeleteOrDefault() bool {
 		return sv.handleDeleteSchedule()
 	case srBackendTier:
 		return sv.handleDeleteBackendTier()
+	case srSandboxProposal:
+		return sv.handleRejectProposal()
 	case srSandboxPath:
 		return sv.handleDeleteSandboxPath()
 	case srAccountDefault, srAccount, srAccountField, srProjectAccount:
@@ -2369,6 +2382,8 @@ func (sv *SettingsView) handleNew() bool {
 
 func (sv *SettingsView) handleEdit() bool {
 	switch sv.currentRowKind() {
+	case srSandboxProposal:
+		return sv.handleToggleProposalScope()
 	case srSandboxPath:
 		return sv.handleEditSandboxPath()
 	case srAccountField:
@@ -3166,6 +3181,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderWarningDetail(screen, x, y, w, h, row)
 	case srSecretsBootstrap:
 		sv.renderSecretsBootstrapDetail(screen, x, y, w, h)
+	case srSandboxProposal:
+		sv.renderProposalDetail(screen, x, y, w, h, row)
 	case srSandbox, srSandboxPath:
 		sv.renderSandboxDetail(screen, x, y, w, h)
 	case srProject:

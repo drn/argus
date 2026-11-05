@@ -192,3 +192,51 @@ test.describe('key bar', () => {
     expect(posted).toBe(false);
   });
 });
+
+// A live session parked at a prompt reports idle:true but must still get the
+// compose bar + key bar; only a task with no session at all is non-interactive.
+test.describe('isInteractive', () => {
+  test('live idle session is interactive, sessionless idle is not', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
+    await page.goto('/');
+    await expect(page.locator('#main-app')).toBeVisible();
+    const got = await page.evaluate(() => {
+      const f = (window as any).isInteractive;
+      return [
+        f({ status: 'in_progress', idle: true, live: true }),
+        f({ status: 'in_progress', idle: true, live: false }),
+        f({ status: 'in_progress', idle: false, live: false }), // mid kill+resume restart
+        f({ status: 'in_progress', idle: true }), // old daemon, no live field
+        f({ status: 'in_progress' }), // old daemon, no live field
+        f({ status: 'complete', live: true }),
+        f(null),
+      ];
+    });
+    expect(got).toEqual([true, false, false, false, true, false, false]);
+  });
+});
+
+// During a daemon rerender restart /input 404s, so input is queued and only
+// the history/queue bookkeeping runs until the new stream opens.
+test.describe('restart input queue', () => {
+  test('queues while a restart is in flight and drops cleanly', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
+    await page.goto('/');
+    await expect(page.locator('#main-app')).toBeVisible();
+    const got = await page.evaluate(async () => {
+      const w = window as any;
+      w.beginRestartQueue('t1');
+      const r1 = await w.postInputBytes('t1', 'hello');
+      const r2 = await w.postInputBytes('t1', '\r');
+      const g = (0, eval); // top-level `let` is not a window property
+      const queued = g('restartQueue.items').slice();
+      const otherTask = g('restartQueue.taskId');
+      w.dropRestartQueue();
+      return { ok: [r1.ok, r2.ok], queued, otherTask, after: g('restartQueue') };
+    });
+    expect(got.ok).toEqual([true, true]);
+    expect(got.queued).toEqual(['hello', '\r']);
+    expect(got.otherTask).toBe('t1');
+    expect(got.after).toBeNull();
+  });
+});

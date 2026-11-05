@@ -192,13 +192,14 @@ func TestComputeRuntimeState(t *testing.T) {
 		running  bool
 		idle     bool
 		wantIdle bool
+		wantLive bool
 	}{
-		{"pending never idle", model.StatusPending, false, false, false},
-		{"in_review never idle", model.StatusInReview, false, false, false},
-		{"complete never idle", model.StatusComplete, false, false, false},
-		{"in_progress no session is idle", model.StatusInProgress, false, false, true},
-		{"in_progress active session not idle", model.StatusInProgress, true, false, false},
-		{"in_progress idle session is idle", model.StatusInProgress, true, true, true},
+		{"pending never idle", model.StatusPending, false, false, false, false},
+		{"in_review never idle", model.StatusInReview, false, false, false, false},
+		{"complete never idle", model.StatusComplete, false, false, false, false},
+		{"in_progress no session is idle", model.StatusInProgress, false, false, true, false},
+		{"in_progress active session not idle", model.StatusInProgress, true, false, false, true},
+		{"in_progress idle session is idle but live", model.StatusInProgress, true, true, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,9 +212,39 @@ func TestComputeRuntimeState(t *testing.T) {
 			if tc.idle {
 				idle["t1"] = true
 			}
-			testutil.Equal(t, computeRuntimeState(task, running, idle, map[string]bool{}).Idle, tc.wantIdle)
+			rt := computeRuntimeState(task, running, idle, map[string]bool{})
+			testutil.Equal(t, rt.Idle, tc.wantIdle)
+			testutil.Equal(t, rt.Live, tc.wantLive)
 		})
 	}
+}
+
+func TestTaskToJSON_LiveWireField(t *testing.T) {
+	task := &model.Task{ID: "t1", Status: model.StatusInProgress}
+	for _, tc := range []struct {
+		name string
+		live bool
+		want string
+	}{{"live true", true, `"live":true`}, {"live false is explicit", false, `"live":false`}} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(taskToJSON(task, taskRuntimeState{Idle: true, Live: tc.live}))
+			testutil.NoError(t, err)
+			testutil.Contains(t, string(b), tc.want)
+		})
+	}
+}
+
+func TestRuntimeState_PendingRestartNotLive(t *testing.T) {
+	srv, _ := testServer(t)
+	task := &model.Task{ID: "t1", Status: model.StatusInProgress}
+	running := map[string]bool{"t1": true}
+	rt := srv.runtimeState(task, running, map[string]bool{}, map[string]bool{})
+	testutil.Equal(t, rt.Live, true)
+
+	srv.runner.(*agent.Runner).SetPendingRestartForTest("t1", true)
+	rt = srv.runtimeState(task, running, map[string]bool{}, map[string]bool{})
+	testutil.Equal(t, rt.Idle, false)
+	testutil.Equal(t, rt.Live, false)
 }
 
 func TestHandleCreateTask(t *testing.T) {
@@ -4142,6 +4173,20 @@ func TestHandleResumeTask_StartFails(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resume", ""))
 	testutil.Equal(t, w.Code, http.StatusInternalServerError)
+}
+
+func TestHandleResumeTask_RefusesDuringRerenderRestart(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	task := &model.Task{Name: "restarting", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+	srv.runner.(*agent.Runner).SetPendingRestartForTest(task.ID, true)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resume", ""))
+	testutil.Equal(t, w.Code, http.StatusConflict)
+	testutil.Contains(t, w.Body.String(), "restarting")
 }
 
 // --- handleStreamOutput clipboard subscriber callback (sync drop-on-full) ---

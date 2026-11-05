@@ -24,6 +24,9 @@ func TestOf(t *testing.T) {
 		{"agent --force", Custom},
 		{"/Users/x/.local/bin/cursor-agent --trust", Cursor},
 		{"cursor-agent-wrapper", Custom},
+		{"omp", Omp},
+		{"/opt/homebrew/bin/omp --model opus", Omp},
+		{"omp-work", Custom},
 		{"claude-wrapper", Custom},
 		{"bash -c 'sleep 1'", Custom},
 		{"", Custom},
@@ -70,7 +73,7 @@ func TestLookup(t *testing.T) {
 
 func TestAll(t *testing.T) {
 	all := All()
-	testutil.Equal(t, len(all), 6)
+	testutil.Equal(t, len(all), 7)
 	all[0].Label = "mutated"
 	testutil.Equal(t, All()[0].Label, "Claude Code")
 	seen := map[string]bool{}

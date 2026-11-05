@@ -18,6 +18,8 @@ const (
 	CopyName
 	// CopyPrompt copies the task prompt.
 	CopyPrompt
+	// CopyID copies the task ID.
+	CopyID
 )
 
 // copyChoice is one selectable row in the modal.
@@ -47,6 +49,7 @@ func NewCopyChoiceModal(title string, promptAvailable bool) *CopyChoiceModal {
 	if promptAvailable {
 		choices = append(choices, copyChoice{label: "Prompt", target: CopyPrompt})
 	}
+	choices = append(choices, copyChoice{label: "ID", target: CopyID})
 	return &CopyChoiceModal{Box: tview.NewBox(), title: title, choices: choices}
 }
 

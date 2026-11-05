@@ -900,7 +900,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// launch.
 	opencodeSkillsDir := ""
 	switch fam.SkillDelivery {
-	case SkillsAddDir, SkillsFlag, SkillsInlineConfig:
+	case SkillsAddDir, SkillsFlag, SkillsInlineConfig, SkillsConfigOverlay:
 		if root, err := ensureSessionSkillsFn(); err != nil {
 			uxlog.Log("[skills] builtin skills materialize failed (continuing without them): %v", err)
 		} else if root != "" {
@@ -911,6 +911,12 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 				cmdStr += " --skill " + shellQuote(skills.BuiltinSkillsDir(root))
 			case SkillsInlineConfig:
 				opencodeSkillsDir = skills.BuiltinSkillsDir(root)
+			case SkillsConfigOverlay:
+				if overlay, err := ensureOmpConfigOverlayFn(skills.BuiltinSkillsDir(root)); err != nil {
+					uxlog.Log("[skills] omp config overlay materialize failed (continuing without builtin skills): %v", err)
+				} else if overlay != "" {
+					cmdStr += " --config " + shellQuote(overlay)
+				}
 			}
 		}
 	}

@@ -514,6 +514,12 @@ func DefaultConfig() Config {
 				// server (registered in ~/.cursor/mcp.json) load unprompted.
 				Command: "cursor-agent --approve-mcps",
 			},
+			"omp": {
+				// Oh My Pi (Homebrew can1357/tap/omp). Capture-style sessions;
+				// the prompt goes after `--`. MCP, skills, and permission flags
+				// are added per launch by the omp family.
+				Command: "omp",
+			},
 		},
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),

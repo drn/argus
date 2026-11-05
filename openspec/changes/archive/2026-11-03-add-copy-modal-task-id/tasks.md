@@ -1,0 +1,3 @@
+- [x] Add `CopyID` target and ID row to `CopyChoiceModal`
+- [x] Handle `CopyID` in `handleCopyChoiceKey`
+- [x] Modal and smoke tests

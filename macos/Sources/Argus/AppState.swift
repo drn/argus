@@ -570,6 +570,25 @@ final class AppState {
         return roster
     }
 
+    var sandboxPendingCount = 0
+
+    func sandboxProposals() async throws -> [SandboxProposal] {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        let ps = try await client.sandboxProposals(status: "pending")
+        sandboxPendingCount = ps.count
+        return ps
+    }
+
+    func approveSandboxProposal(id: String, _ req: SandboxApproveRequest) async throws -> SandboxApproveResult {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.approveSandboxProposal(id: id, req)
+    }
+
+    func rejectSandboxProposal(id: String) async throws {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        try await client.rejectSandboxProposal(id: id)
+    }
+
     func schedules() async throws -> [Schedule] {
         guard let client else { throw ArgusError.invalidResponse("not connected") }
         return try await client.schedules()
@@ -853,7 +872,7 @@ final class AppState {
     static func isLikelyClaudeBacked(_ task: ArgusTask, backends: [String: BackendInfo] = [:]) -> Bool {
         guard let name = task.backend, !name.isEmpty else { return true }
         if let switcher = backends[name]?.sessionSwitcher { return switcher }
-        return !["codex", "pi", "opencode", "antigravity"].contains(name.lowercased())
+        return !["codex", "pi", "opencode", "antigravity", "omp"].contains(name.lowercased())
     }
 
     /// Fetches the task's Claude sessions and opens the picker sheet on
