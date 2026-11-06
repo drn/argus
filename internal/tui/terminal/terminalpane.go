@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"image/color"
 
@@ -221,7 +222,7 @@ var (
 // cachedCell stores a single cell's screen position and content for fast replay.
 type cachedCell struct {
 	x, y  int
-	ch    rune
+	text  string
 	style tcell.Style
 }
 
@@ -230,6 +231,9 @@ type cachedCell struct {
 // No activeInputBG or findInputRow — the native surface shows upstream
 // PTY output without Argus-injected highlights.
 type TerminalPane struct {
+	// Frame observations are owned by the UI goroutine and consumed afterDraw.
+	painted      bool
+	paintedTotal uint64
 	*tview.Box
 	mu      sync.Mutex
 	session agentview.TerminalAdapter
@@ -1851,6 +1855,8 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		tp.renderDiff(screen, x, y, width, height)
 		return
 	}
+	tp.painted = true
+	tp.paintedTotal = 0
 
 	tp.mu.Lock()
 	sess := tp.session
@@ -2113,6 +2119,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		// renderLive fetches the buffer internally, only when new bytes
 		// have arrived — avoids a 256KB ring buffer copy on every draw.
 		tp.renderLive(screen, x, y, width, height, ptyCols, ptyRows)
+		tp.paintedTotal = tp.emuFedTotal
 	}
 }
 
@@ -2613,15 +2620,10 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 				cell = emu.CellAt(col, mainRow)
 			}
 
-			ch := ' '
+			text := " "
 			style := tcell.StyleDefault
 			if cell != nil {
-				if cell.Content != "" {
-					runes := []rune(cell.Content)
-					if len(runes) > 0 {
-						ch = runes[0]
-					}
-				}
+				text = firstCellText(cell.Content)
 				style = UvCellToTcellStyle(cell)
 				if grayscale {
 					style = DesaturateStyle(style)
@@ -2636,8 +2638,8 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 			}
 
 			sx, sy := x+col, y+screenRow
-			screen.SetContent(sx, sy, ch, nil, style)
-			tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, ch: ch, style: style})
+			screen.Put(sx, sy, text, style)
+			tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, text: text, style: style})
 		}
 	}
 
@@ -2651,8 +2653,8 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	for screenRow := contentRows; screenRow < h; screenRow++ {
 		for col := 0; col < renderCols; col++ {
 			sx, sy := x+col, y+screenRow
-			screen.SetContent(sx, sy, ' ', nil, tcell.StyleDefault)
-			tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, ch: ' ', style: tcell.StyleDefault})
+			screen.Put(sx, sy, " ", tcell.StyleDefault)
+			tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, text: " ", style: tcell.StyleDefault})
 		}
 	}
 
@@ -2667,8 +2669,9 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 		for i, r := range indicator {
 			if midX+i < x+w {
 				sx, sy := midX+i, y
-				screen.SetContent(sx, sy, r, nil, style)
-				tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, ch: r, style: style})
+				text := string(r)
+				screen.Put(sx, sy, text, style)
+				tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, text: text, style: style})
 			}
 		}
 	}
@@ -2687,8 +2690,21 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 // no new PTY output has arrived.
 func (tp *TerminalPane) replayPaintCache(screen tcell.Screen) {
 	for _, c := range tp.paintCacheCells {
-		screen.SetContent(c.x, c.y, c.ch, nil, c.style)
+		screen.Put(c.x, c.y, c.text, c.style)
 	}
+}
+
+// Preserve the existing first-rune rendering, including invalid UTF-8's
+// replacement glyph, while retaining the emulator's immutable string storage.
+func firstCellText(content string) string {
+	if content == "" {
+		return " "
+	}
+	r, size := utf8.DecodeRuneInString(content)
+	if r == utf8.RuneError && size == 1 {
+		return "�"
+	}
+	return content[:size]
 }
 
 func (tp *TerminalPane) newTrackedEmulator(cols, rows int) *xvt.SafeEmulator {

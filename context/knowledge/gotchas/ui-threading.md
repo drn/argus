@@ -1,5 +1,17 @@
 ## UI Threading
 
+- **Use `Put` with reusable strings for repeated cell fills and terminal-cache replay.** tcell v2.13.8's `SetContent` converts a rune slice to a newly allocated string on every call; pinned tview v0.42.0 has no public setter for its private `dontClear` flag, so its Box fill cannot be disabled through a supported API.
+
+- **Keep the terminfo TTY size cache below the screen layer: Clear/Draw/Show still run normally.** tcell v2.13.8 issues a terminal-size ioctl on every Show; resolve terminfo before opening the TTY, since its stock Close cannot release a device that has not been started.
+
+- **Quit through `stopTUI`, which stops output wakes and lets the single queued repaint return before stopping tview.** `QueueUpdateDraw` is synchronous and cannot be cancelled after enqueue; stopping the event loop first would strand the pump.
+
+- **Output subscriptions follow panes actually drawn, including Hera fullscreen, rather than tab or focus guesses.** The shared pump coalesces notifications before a draw, preserving output that arrives during it; its writers never block, and each Done watcher is cancelled when its pane hides or rebinds.
+- **Keep the historical redraw-loop generation guard on the renamed PTY-only loop (`ptySyncLoopGen`, `startAgentPTYSyncLoop`, `ptySyncLoopShouldExit`).** The fast leave/return leak described below still applies to size sync, but that timer no longer queues draws.
+- **Use existing `AddWriterFrom` for repaint notifications; do not add a signal to `agent/session.go` or change its ring buffer.** Those files participate in the supervisor stream digest, while an in-process writer subscription needs only a TUI relaunch.
+
+- **Typing timing is opt-in per TUI launch (`ARGUS_TYPING_LOG=1`); `afterDraw` precedes the actual terminal flush.** Keep key/closure bookkeeping on the UI goroutine, record stream arrival through atomics only, and finish latency samples after `lazyScreen.Show` delegates; no input content belongs in the log.
+
 - **Never run git commands synchronously on the UI thread.** Even fast commands take 50-500ms. Use background goroutines + `QueueUpdateDraw`.
 - **The "no sync external commands on the UI thread" rule generalizes beyond git** — `launchctl`, `gh`, `go install`, anything that shells out. The tempting "<100ms is fine" carve-out is a trap: setting `busy=true` + calling `rebuildRows()` before the blocking call has zero visible effect because the tview event loop can't repaint until your handler returns. Pattern: settings view exposes an `OnXxx` callback, app wires it to `go app.doXxx()`, the goroutine calls `tapp.QueueUpdateDraw(SetXxxResult)` to clear busy on completion. See `OnToggleAutoStart` / `app.toggleAutoStart` for a minimal example.
 - **Never call `GetInnerRect()` from the tick goroutine.** tview is not thread-safe. Store pending values under mutex in `Draw()`, read from tick goroutine.

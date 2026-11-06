@@ -205,11 +205,11 @@ func (a *App) closeJumpSwitcher() {
 }
 
 // resumeAgentViewAfterSwitcher re-syncs the classic agent view the popup was
-// covering. While a.mode was modeJumpSwitcher the agent's 200ms redraw loop
-// exited (redrawLoopShouldExit) and startSession — e.g. a size-drift kick's
+// covering. While a.mode was modeJumpSwitcher the agent's 200ms PTY sync loop
+// exited (ptySyncLoopShouldExit) and startSession — e.g. a size-drift kick's
 // restart, which isViewingTaskSession lets through while the popup is open —
 // skipped attaching its fresh session to agentPane. Re-attach the runner's
-// current session if it changed, and restart the redraw loop for a live one.
+// current session if it changed, and restart PTY size sync for a live one.
 func (a *App) resumeAgentViewAfterSwitcher() {
 	a.mu.Lock()
 	taskID := a.agentState.TaskID
@@ -227,7 +227,7 @@ func (a *App) resumeAgentViewAfterSwitcher() {
 		uxlog.Log("[switcher] close: re-attached session for task %s", taskID)
 	}
 	if sess.Alive() {
-		a.startAgentRedrawLoop(taskID, sess)
+		a.startAgentPTYSyncLoop(taskID, sess)
 	}
 }
 

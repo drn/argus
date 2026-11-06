@@ -301,6 +301,7 @@ func runTUI() {
 	}
 
 	app := tui.New(database, runner, daemonConnected)
+	app.EnableTypingLog(os.Getenv("ARGUS_TYPING_LOG") == "1")
 	app.SetSkew(skewResult)
 	appRef = app
 	appRef2 = app

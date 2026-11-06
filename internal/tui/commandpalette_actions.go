@@ -51,7 +51,7 @@ func (a *App) globalActionRegistry() map[keymap.Action]func() {
 	return map[keymap.Action]func(){
 		keymap.ActGlobalQuit: func() {
 			if a.mode == modeTaskList {
-				a.tapp.Stop()
+				a.stopTUI()
 			}
 		},
 		keymap.ActGlobalTabTasks: func() {

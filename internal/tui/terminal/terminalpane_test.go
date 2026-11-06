@@ -1722,7 +1722,7 @@ func TestTerminalPane_PaintCacheInvalidatedOnNewBytes(t *testing.T) {
 func TestTerminalPane_PaintCacheInvalidatedOnReset(t *testing.T) {
 	tp := NewTerminalPane()
 	tp.paintCacheValid = true
-	tp.paintCacheCells = []cachedCell{{x: 0, y: 0, ch: 'A', style: tcell.StyleDefault}}
+	tp.paintCacheCells = []cachedCell{{x: 0, y: 0, text: "A", style: tcell.StyleDefault}}
 
 	tp.ResetVT()
 	if tp.paintCacheValid {

@@ -9,9 +9,7 @@ controlling a home/work daemon over a private network such as Tailscale. All
 persistence and agent-session control routes through HTTP and Server-Sent
 Events, so the daemon remains the single owner of the database and the running
 agent processes.
-
 ## Requirements
-
 ### Requirement: Remote launch authentication and preflight
 
 The remote TUI SHALL require a bearer token and SHALL verify connectivity to
@@ -212,3 +210,22 @@ remote endpoint SHALL return an explanatory error.
 
 - **WHEN** a store operation has no corresponding REST endpoint (e.g. purging task messages or artifacts directly)
 - **THEN** the store SHALL return an explanatory error noting the daemon performs that cleanup on task deletion instead
+
+### Requirement: Remote sessions deliver streamed output to attached writers
+
+A remote session SHALL deliver each decoded output chunk to its attached writers after appending it to the local ring buffer, and SHALL honor the same attach and replay offsets as other session handles, so that a terminal pane in `--remote` mode can repaint when output arrives. A writer that returns an error SHALL be removed, and a writer SHALL NOT be able to stall the stream reader while holding the session lock.
+
+#### Scenario: Attached writer receives streamed output
+
+- **WHEN** a writer is attached at the current output total and the SSE stream emits an output event
+- **THEN** the decoded bytes reach the writer after they are readable from the ring buffer
+
+#### Scenario: Attaching at the current total replays nothing
+
+- **WHEN** a writer is attached with an offset equal to the session's total output
+- **THEN** the writer receives no replayed bytes and receives only later output
+
+#### Scenario: A failing writer is removed
+
+- **WHEN** an attached writer returns an error
+- **THEN** it is removed and the stream continues to other writers and to the ring buffer

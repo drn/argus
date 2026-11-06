@@ -569,6 +569,10 @@ func (p *HeraPage) SelectionContext() heramodel.Selection { return p.sel }
 // scrollback; everything else is encoded (shared keyenc, identical to the main
 // agent PTY path) and written to the live session so the pane is interactive.
 func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
+	var entered time.Time
+	if p.OnForwardKey != nil {
+		entered = time.Now()
+	}
 	switch ev.Key() {
 	case tcell.KeyPgUp:
 		// BUG-031: a full-screen agent (alt-screen) has no linear scrollback;
@@ -619,8 +623,15 @@ func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 		// returned above, so only genuine input reaches here. Output-driven
 		// growth is unaffected (anchor-lock still pins scrolled-up content).
 		tp.ResetScroll()
+		var queued func()
+		if p.OnForwardKey != nil {
+			queued = p.OnForwardKey(tp, ev, entered)
+		}
 		if _, err := sess.WriteInput(b, agentview.OriginUser); err != nil {
 			uxlog.Log("[hera-view] pane write failed: %v", err)
+		}
+		if queued != nil {
+			queued()
 		}
 	}
 }

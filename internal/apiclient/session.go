@@ -36,6 +36,7 @@ type Session struct {
 
 	mu            sync.Mutex
 	buf           *agent.RingBuffer
+	writers       []io.Writer
 	pid           int
 	cols          int
 	rows          int
@@ -245,13 +246,86 @@ func (s *Session) Stop() error { return s.p.c.StopTask(context.Background(), s.t
 // StopScoped ignores scope (REST has none); see Provider.StopScoped.
 func (s *Session) StopScoped(agent.StopScope) error { return s.Stop() }
 
-// AddWriter, AddWriterFrom, AddWriterFromTolerant, RemoveWriter are no-ops.
-// The server fans bytes to /stream; the TUI reads RecentOutput* off the
-// local ring buffer. Same contract as daemon-client RemoteSession.
-func (s *Session) AddWriter(_ io.Writer)                       {}
-func (s *Session) AddWriterFrom(_ io.Writer, _ uint64)         {}
-func (s *Session) AddWriterFromTolerant(_ io.Writer, _ uint64) {}
-func (s *Session) RemoveWriter(_ io.Writer)                    {}
+// AddWriter replays retained output outside the session lock and attaches w.
+func (s *Session) AddWriter(w io.Writer) { s.AddWriterFromTolerant(w, 0) }
+
+// AddWriterFrom replays the retained delta and attaches atomically. w must
+// not block: replay runs under s.mu, just like daemon-client RemoteSession.
+func (s *Session) AddWriterFrom(w io.Writer, offset uint64) {
+	if w == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if data := s.writerReplayLocked(offset); len(data) > 0 {
+		if _, err := w.Write(data); err != nil {
+			uxlog.Log("[apiclient] output writer replay failed task=%s: %v", s.taskID, err)
+			return
+		}
+	}
+	s.writers = append(s.writers, w)
+}
+
+// AddWriterFromTolerant allows blocking replay outside s.mu. The snapshot-to-
+// attach window may lose output; nonblocking consumers use AddWriterFrom.
+func (s *Session) AddWriterFromTolerant(w io.Writer, offset uint64) {
+	if w == nil {
+		return
+	}
+	s.mu.Lock()
+	data := s.writerReplayLocked(offset)
+	s.mu.Unlock()
+	if len(data) > 0 {
+		if _, err := w.Write(data); err != nil {
+			uxlog.Log("[apiclient] output writer replay failed task=%s: %v", s.taskID, err)
+			return
+		}
+	}
+	s.mu.Lock()
+	s.writers = append(s.writers, w)
+	s.mu.Unlock()
+}
+
+func (s *Session) writerReplayLocked(offset uint64) []byte {
+	total := s.buf.TotalWritten()
+	if offset >= total {
+		return nil
+	}
+	gap := total - offset
+	if gap > uint64(s.buf.Len()) { //nolint:gosec // Len is nonnegative.
+		return s.buf.Bytes()
+	}
+	return s.buf.Tail(int(gap)) //nolint:gosec // gap is bounded by ring Len above.
+}
+
+// RemoveWriter unregisters a writer. A previously snapshotted write may finish.
+func (s *Session) RemoveWriter(w io.Writer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removeWriterLocked(w)
+}
+
+func (s *Session) removeWriterLocked(w io.Writer) {
+	for i, existing := range s.writers {
+		if existing == w {
+			s.writers = append(s.writers[:i], s.writers[i+1:]...)
+			return
+		}
+	}
+}
+
+func (s *Session) appendOutput(payload []byte) {
+	s.mu.Lock()
+	s.buf.Write(payload)
+	writers := append([]io.Writer(nil), s.writers...)
+	s.mu.Unlock()
+	for _, w := range writers {
+		if _, err := w.Write(payload); err != nil {
+			s.RemoveWriter(w)
+			uxlog.Log("[apiclient] output writer dropped task=%s: %v", s.taskID, err)
+		}
+	}
+}
 
 // close terminates the SSE reader and signals consumers of Done(). It is
 // safe to call concurrently and repeatedly: both the runStream goroutine
@@ -364,9 +438,7 @@ func (s *Session) streamOnce() (bool, error) {
 			if derr != nil {
 				continue
 			}
-			s.mu.Lock()
-			s.buf.Write(payload)
-			s.mu.Unlock()
+			s.appendOutput(payload)
 		}
 	}
 }

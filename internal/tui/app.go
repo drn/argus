@@ -522,6 +522,10 @@ type App struct {
 
 	// Tick control
 	tickDone            chan struct{}
+	tickStopOnce        sync.Once
+	quitOnce            sync.Once
+	typing              *typingTracker
+	repaint             *repaintPump
 	tickCallbackPending atomic.Bool          // debounce: skip enqueue if prior callback hasn't run
 	startGen            atomic.Uint64        // double-bumped by startSession (before+after Start RPC); tick captures before its RPC and skips reconciliation on mismatch
 	recentStarts        map[string]time.Time // task ID → time of last startSession; grace period prevents false reconciliation
@@ -579,8 +583,8 @@ type App struct {
 	committedCols    map[string]uint16
 	committedColsPID map[string]int
 
-	// redrawLoopGen supersedes a stale startAgentRedrawLoop goroutine on a fast leave-and-return; see gotchas/ui-threading.md (fix-redraw-loop-leak).
-	redrawLoopGen map[string]uint64
+	// ptySyncLoopGen supersedes a stale startAgentPTYSyncLoop goroutine on a fast leave-and-return; see gotchas/ui-threading.md (fix-redraw-loop-leak).
+	ptySyncLoopGen map[string]uint64
 
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
@@ -742,7 +746,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		lastAttachCols:         make(map[string]uint16),
 		committedCols:          make(map[string]uint16),
 		committedColsPID:       make(map[string]int),
-		redrawLoopGen:          make(map[string]uint64),
+		ptySyncLoopGen:         make(map[string]uint64),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
 		nowFn:                  time.Now,
@@ -1200,6 +1204,15 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	}
 	a.reconcilePluginViewSize()
 	a.publishInitialPTYLayout(screen)
+	if a.typing != nil || a.repaint != nil {
+		frames := terminalFrames(a.agentPane, a.heraPage.CoordPane(), a.heraPage.AgentPane())
+		if a.typing != nil {
+			a.typing.reconcileFrames(frames)
+		}
+		if a.repaint != nil {
+			a.repaint.reconcile(frames)
+		}
+	}
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
@@ -1551,18 +1564,15 @@ func (a *App) Run() error {
 	// Wrap the tcell screen in lazyScreen. The wrapper is a passthrough
 	// today; keeping the indirection lets smoke tests inject a
 	// SimulationScreen through the same path production uses.
-	rawScreen, err := tcell.NewScreen()
+	rawScreen, err := cachedTerminalScreen(tcell.NewDevTty, tcell.NewTerminfoScreenFromTty)
 	if err != nil {
 		return err
 	}
-	a.screen = &lazyScreen{Screen: rawScreen}
-	a.tapp.SetScreen(a.screen)
 	// EnableMouse/EnablePaste must be called AFTER SetScreen. tview's
 	// EnablePaste only calls screen.EnablePaste() when a.screen is non-nil,
 	// and Run() only auto-enables when it creates its own screen. Calling
 	// these before SetScreen stores the flag but never applies it.
-	a.tapp.EnableMouse(true)
-	a.tapp.EnablePaste(true)
+	a.setTerminalScreen(rawScreen)
 	// Focus reporting (DECSET 1004): tmux/iTerm2 forward focus events to
 	// the foreground process. On focus regain we call screen.Sync()
 	// directly to repair any drift that accumulated while we were
@@ -1588,9 +1598,10 @@ func (a *App) Run() error {
 		a.screen.Sync()
 	}
 
+	a.startOutputRepaint()
 	go a.tickLoop()
 	go a.spinnerLoop()
-	defer close(a.tickDone)
+	defer func() { a.stopLoops(); a.repaint.close(); a.typing.close() }()
 
 	// If main detected the daemon's binary differs from ours, open the prompt
 	// directly. We can't use QueueUpdateDraw here: tview's QueueUpdate is
@@ -1721,6 +1732,10 @@ func (a *App) onTick() {
 	}
 	a.tapp.QueueUpdateDraw(func() {
 		a.tickCallbackPending.Store(false)
+		if a.typing != nil {
+			start := a.typing.now()
+			defer func() { a.typing.tick(start, a.typing.now()) }()
+		}
 		// Lock a.mu to protect App-level fields (mode, agentState,
 		// tasks, runningIDs) during refresh.
 		a.mu.Lock()
@@ -3998,6 +4013,10 @@ func (a *App) activeKeymap() *keymap.Keymap {
 }
 
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
+	var entered time.Time
+	if a.typing != nil {
+		entered = a.typing.now()
+	}
 	// Plugin-view mode — full surrender. While a plugin has the ball, argus
 	// reserves NO key for its own navigation: Esc, Ctrl+C, `?`, tab-switch
 	// numbers, focus-rail arrows — all forward to the plugin via the focused
@@ -4218,8 +4237,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.mode == modeAgent {
 			// Forward ctrl+c to the PTY if session is alive; otherwise ignore
 			if sess := a.agentPane.Session(); sess != nil && sess.Alive() {
+				var queued func()
+				if a.typing != nil {
+					queued = a.typing.forward(a.agentPane, event, entered, "tasks")
+				}
 				if _, err := sess.WriteInput([]byte{0x03}, agentview.OriginUser); err != nil {
 					uxlog.Log("[tui] write ctrl+c to PTY failed: %v", err)
+				}
+				if queued != nil {
+					queued()
 				}
 			}
 			return nil
@@ -4229,7 +4255,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.heraPaneFocused() {
 			break
 		}
-		a.tapp.Stop()
+		a.stopTUI()
 		return nil
 	case tcell.KeyCtrlQ:
 		if a.tasksRailEnabled && a.tasksRailViewing {
@@ -4280,7 +4306,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			switch act {
 			case keymap.ActGlobalQuit:
 				if a.mode == modeTaskList {
-					a.tapp.Stop()
+					a.stopTUI()
 					return nil
 				}
 			case keymap.ActGlobalTabTasks:
@@ -4615,6 +4641,10 @@ func (a *App) returnToAgentView(ret *agentCrossReturn) bool {
 
 // handleAgentKey handles keys when the agent view is active.
 func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
+	var entered time.Time
+	if a.typing != nil {
+		entered = a.typing.now()
+	}
 	// Escape is structural (focus state machine + forward-to-PTY) and is NOT
 	// rebindable — handled before any keymap resolution.
 	if event.Key() == tcell.KeyEscape {
@@ -4632,8 +4662,15 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 		// When focused on terminal, forward escape to PTY if alive, otherwise consume it
 		if sess := a.agentPane.Session(); sess != nil && sess.Alive() {
+			var queued func()
+			if a.typing != nil {
+				queued = a.typing.forward(a.agentPane, event, entered, "tasks")
+			}
 			if _, err := sess.WriteInput([]byte{0x1b}, agentview.OriginUser); err != nil {
 				uxlog.Log("[tui] write escape to PTY failed: %v", err)
+			}
+			if queued != nil {
+				queued()
 			}
 			a.agentPane.ResetScroll()
 		}
@@ -4793,20 +4830,16 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	if sess != nil && sess.Alive() {
 		b := tcellKeyToBytes(event)
 		if len(b) > 0 {
+			var queued func()
+			if a.typing != nil {
+				queued = a.typing.forward(a.agentPane, event, entered, "tasks")
+			}
 			if _, err := sess.WriteInput(b, agentview.OriginUser); err != nil {
 				uxlog.Log("[tui] write to PTY failed: %v", err)
 			}
-			// Schedule a fast follow-up redraw to paint the PTY echo.
-			// The immediate tview draw (from returning nil) fires before
-			// the echo arrives (~1-5ms). Without this, the echo waits
-			// up to 200ms for the redraw loop poll — visible as typing lag.
-			tw := sess.TotalWritten()
-			go func() {
-				time.Sleep(16 * time.Millisecond)
-				if sess.TotalWritten() != tw {
-					a.tapp.QueueUpdateDraw(func() {})
-				}
-			}()
+			if queued != nil {
+				queued()
+			}
 			return nil
 		}
 	}
@@ -5546,9 +5579,9 @@ func (a *App) bindTaskAgent(task *model.Task, autoStart, focus bool) {
 		go a.fetchGitStatus(task.ID, a.worktreeDir)
 	}
 
-	// Start continuous redraw loop for existing running sessions.
+	// Keep PTY dimensions in sync for existing running sessions.
 	if sess != nil && sess.Alive() {
-		a.startAgentRedrawLoop(task.ID, sess)
+		a.startAgentPTYSyncLoop(task.ID, sess)
 		// Detect width drift between the session's committed scrollback width
 		// and the current panel — covers both the narrow-stuck-at-startup case
 		// and the "another viewer (web app, resized terminal) committed at a
@@ -6556,7 +6589,7 @@ func (a *App) startSession(task *model.Task) {
 	a.db.Update(task)                    //nolint:errcheck
 	a.invalidateTasksChangeGate()
 
-	// Attach to the terminal pane and start the redraw loop only if the
+	// Attach to the terminal pane and start the PTY sync loop only if the
 	// agent view is active for this task. When startSession is called from
 	// the background (user navigated away during worktree creation), the
 	// pane isn't visible — onTaskSelect will attach when the user returns.
@@ -6567,55 +6600,50 @@ func (a *App) startSession(task *model.Task) {
 		// onTaskSelect isn't called and the PTY could otherwise be stuck at
 		// its launch size.
 		a.agentPane.ForceResyncPTY()
-		a.startAgentRedrawLoop(task.ID, sess)
+		a.startAgentPTYSyncLoop(task.ID, sess)
 	}
 }
 
-// startAgentRedrawLoop runs a goroutine that triggers redraws every 200ms
-// while the session is alive and the agent view is active. The 1-second tick
-// is too slow for a live terminal. Self-terminates when the session exits,
-// the user leaves the agent view, or redrawLoopGen supersedes it for the same task.
-func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
-	uxlog.Log("[tui] startAgentRedrawLoop: taskID=%s", taskID)
+// startAgentPTYSyncLoop applies pending PTY sizes off the UI goroutine every
+// 200ms while this task is viewed. Output repainting has its own pump.
+// Self-terminates when the session exits,
+// the user leaves the agent view, or ptySyncLoopGen supersedes it for the same task.
+func (a *App) startAgentPTYSyncLoop(taskID string, sess agent.SessionHandle) {
+	uxlog.Log("[tui] startAgentPTYSyncLoop: taskID=%s", taskID)
 	a.mu.Lock()
-	a.redrawLoopGen[taskID]++
-	myGen := a.redrawLoopGen[taskID]
+	a.ptySyncLoopGen[taskID]++
+	myGen := a.ptySyncLoopGen[taskID]
 	a.mu.Unlock()
 	go func() {
-		var lastTotalWritten uint64
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
 		for {
-			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-a.tickDone:
+				return
+			case <-ticker.C:
+			}
 			if !sess.Alive() {
-				// One final redraw to show the finished state.
-				a.tapp.QueueUpdateDraw(func() {})
 				return
 			}
-			if a.redrawLoopShouldExit(taskID, myGen) {
+			if a.ptySyncLoopShouldExit(taskID, myGen) {
 				return
 			}
-			// Sync PTY size on every redraw cycle — the 1-second tick is too
+			// Sync PTY size on every cycle — the 1-second tick is too
 			// slow and causes the agent to render at the wrong width (e.g., 80
 			// cols) until the first tick fires. This is an RPC call but runs on
 			// the background goroutine, not the tview main goroutine.
 			a.agentPane.SyncPTYSize()
-			// Only trigger a redraw when new output has arrived. Keystroke
-			// and window-resize events already trigger their own redraws via
-			// tview, so skipping here when idle avoids unnecessary draw cycles.
-			tw := sess.TotalWritten()
-			if tw != lastTotalWritten {
-				lastTotalWritten = tw
-				a.tapp.QueueUpdateDraw(func() {})
-			}
 		}
 	}()
 }
 
-// redrawLoopShouldExit reports whether the redraw loop for taskID (generation myGen) must stop — pure predicate, unit-testable without goroutines.
-func (a *App) redrawLoopShouldExit(taskID string, myGen uint64) bool {
+// ptySyncLoopShouldExit reports whether this generation's PTY sync loop must stop.
+func (a *App) ptySyncLoopShouldExit(taskID string, myGen uint64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	stillViewing := (a.mode == modeAgent || a.tasksRailViewing) && a.agentState.TaskID == taskID
-	superseded := a.redrawLoopGen[taskID] != myGen
+	superseded := a.ptySyncLoopGen[taskID] != myGen
 	return !stillViewing || superseded
 }
 
@@ -7912,7 +7940,7 @@ func (a *App) deleteTask(t *model.Task) {
 	delete(a.pendingRerenderRestart, t.ID)
 	delete(a.committedCols, t.ID)
 	delete(a.committedColsPID, t.ID)
-	delete(a.redrawLoopGen, t.ID) // also self-terminates any still-live loop: a missing key reads back as 0, which myGen (starts at 1) can never match
+	delete(a.ptySyncLoopGen, t.ID) // also self-terminates any still-live loop: a missing key reads back as 0, which myGen (starts at 1) can never match
 	a.refreshTasksLocal()
 
 	// Clean up worktree and branch in background — git operations can take seconds.

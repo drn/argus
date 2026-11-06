@@ -17,6 +17,10 @@ cmd/argus/main.go
 cmd/argus/kb.go
 cmd/argus/remote.go
 
+# Diagnostic CLI flag/print glue; parsing, percentiles and HTTP capture are
+# tested in internal/latencyreport using synthetic logs and httptest.
+cmd/argus-latency/main.go
+
 # `argus doctor` gather+print glue: best-effort I/O only (exec.LookPath,
 # EvalSymlinks, `go env`, a read-only daemon BootInfo dial). The testable
 # substance — the verdict + rendering — lives in internal/doctor (97% covered).
