@@ -173,6 +173,16 @@ Reproduce with `go test ./internal/tui/widget ./internal/tui/terminal -run '^$' 
 
 Following the valid-but-uncontrolled run, the coordinator directed a back-to-back A/B on 2026-11-06. Aaron first relaunches frozen BASE `/tmp/argus-paint-baseline-v2.CyRaje/argus-baseline`, then the unchanged cellstrings binary in the identical split view. Each capture requires an explicit go, executable verification, the same 24-second/600-line producer, a 20-second CPU profile, load averages and the full view/resize/restart/bind audit. The acceptance bar is **cellstrings CPU ≤ fresh BASE CPU +10 percentage points**, replacing the stale absolute limit for this comparison. Report draw/flush CPU separately from refreshTasksWithIDs and Hera.doRefresh; cumulative nested paths must not be added or subtracted twice. No code changes, push or PR are authorized during the A/B.
 
+### Fresh A/B: BASE capture
+
+- **Executable/view:** worker independently verified listener PID 28829 at `/private/tmp/argus-paint-baseline-v2.CyRaje/argus-baseline`. Terminal 214×52, same coordinator/worker split. Both process-bind markers and the launch resize are at 00:50:05, before capture.
+- **Capture:** same 24-second/600-line producer plus 20-second profile; both completed. Native start **2026-11-06 00:50:47 PST**, duration **20.05s**, CPU samples **5.01s**, or **24.99% of one core**. The paired cellstrings limit is therefore **34.99%** (fresh BASE +10 points), pending the second capture.
+- **Audit:** no cross-tab, agent-view enter/exit, fullscreen width change, PTY/afterDraw resize, rerender stop, bind or selection marker in the inclusive **00:50:47–00:51:08** window. The run is retained.
+- **Load:** **22.60 / 20.94 / 17.69**, uptime 18 days, 10:52.
+- **Paint-path CPU:** Application.draw **1.03s** (~5.14% of one core), containing Show **0.35s** and TerminalPane.Draw **0.41s**; SetContent **0.53s**, Box.DrawForSubclass **0.32s**, paintEmu **0.11s**. These cumulative paths overlap and are not summed.
+- **Refresh split:** refreshTasksWithIDs **3.55s** (~17.71% of one core), including Hera.doRefresh **2.36s** (~11.77%). The residual after subtracting refresh once from total is **1.46s** (~7.28%); that residual includes all non-refresh work and is not a pure paint metric. Application.draw is the separate draw/flush comparison for PR 1.
+- **Evidence:** `/tmp/argus-paint-cellstrings.BjC0vj/pprof.argus-baseline.samples.cpu.001.pb.gz`, `fresh-base-busy.txt`, `fresh-base-busy-cum.txt`, `fresh-base-busy-start.txt` and `fresh-base-busy-load.txt`. Producer and profiler stopped; await explicit cellstrings go.
+
 ### Operator steps
 
 The coordinator approved completing the remaining Before and After typing and busy CPU captures back-to-back. Keep the same terminal size and daemon/supervisor deployment, and choose **Skip/Esc** in both skew modals. Close only the TUI between runs.
