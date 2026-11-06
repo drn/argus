@@ -144,6 +144,8 @@ The valid cache busy rerun attributes 1.32s to tcell SetContent, whose implement
 
 ## Baseline procedure
 
+**Measurement amendment, 2026-11-06:** machine load and tick-refresh cost changed substantially before the cellstrings run. The coordinator requires a fresh back-to-back BASE/cellstrings busy A/B in the identical view, with the same producer, executable checks, full transition audit and load snapshots. The bar for this pair is cellstrings CPU no more than 10 percentage points above fresh BASE; additionally compare draw/flush costs separately from task/Hera refresh. Each capture waits for its explicit coordinator go; no code changes during the comparison.
+
 **Coordinator amendment, 2026-11-05:** the v2 timing-only binary at `/tmp/argus-paint-baseline-v2.CyRaje/` is frozen with hotfix `2349aead`. Implementation may proceed before the remaining Before typing and busy CPU capture. Aaron will complete Before on that binary and After on a separately built repaint binary in one sitting, recording load and task count for both. The recorded idle Before figures remain valid. No deployment, push or PR is authorized until the coordinator resumes those steps; always choose Skip/Esc in scratch-binary skew modals, since a restart action can repoint the shared deployment at the scratch binary.
 
 The timing log has to run in a TUI without the repaint change, and a TUI change only takes effect when Aaron relaunches. Workers must not deploy: the dogfood daemon is shared with the MySQL coordinator and `iris_set_dogfood` overwrites it.
