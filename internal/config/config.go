@@ -437,6 +437,8 @@ type Keybindings struct {
 }
 
 type UIConfig struct {
+	// TasksRail keeps the project task rail visible beside task terminals.
+	TasksRail        bool   `toml:"tasks_rail"`
 	CoordinatorBoard bool   `toml:"coordinator_board"`
 	Theme            string `toml:"theme"`
 	ShowElapsed      bool   `toml:"show_elapsed"`

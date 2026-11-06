@@ -52,6 +52,7 @@ const (
 	ActTaskCopy      Action = "tasklist.copy"
 	ActTaskFilter    Action = "tasklist.filter"
 	ActTaskHera      Action = "tasklist.toggle_hera"
+	ActTaskExpandAll Action = "tasklist.expand_all"
 	ActTaskInbox     Action = "tasklist.inbox"
 	ActTaskArtifacts Action = "tasklist.artifacts"
 	// ActTaskMoveAccount (add-account-move) moves the selected task to
@@ -167,7 +168,7 @@ var defaultSpecs = map[Context]map[Action]string{
 	CtxTaskList: {
 		ActTaskNew: "n", ActTaskStatusAdv: "s", ActTaskStatusRev: "S",
 		ActTaskArchive: "a", ActTaskPin: "P", ActTaskRename: "r", ActTaskCopy: "c",
-		ActTaskFilter: "/", ActTaskHera: "H", ActTaskDown: "j", ActTaskUp: "k",
+		ActTaskExpandAll: "F", ActTaskFilter: "/", ActTaskHera: "H", ActTaskDown: "j", ActTaskUp: "k",
 		ActTaskInbox:       "i",
 		ActTaskArtifacts:   "v",
 		ActTaskMoveAccount: ">",
@@ -219,7 +220,7 @@ var actionLabels = map[Action]string{
 
 	ActTaskNew: "new task", ActTaskStatusAdv: "advance status", ActTaskStatusRev: "revert status",
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
-	ActTaskCopy: "copy name / prompt", ActTaskFilter: "filter", ActTaskHera: "show/hide hera-managed (workers+coords)",
+	ActTaskExpandAll: "toggle all Tasks projects open", ActTaskCopy: "copy name / prompt", ActTaskFilter: "filter", ActTaskHera: "show/hide hera-managed (workers+coords)",
 	ActTaskDown: "navigate down", ActTaskUp: "navigate up", ActTaskInbox: "view message inbox (read-only)",
 	ActTaskArtifacts: "view task artifacts", ActTaskMoveAccount: "move to another account (resumes there)",
 
@@ -313,7 +314,7 @@ var contextOrder = map[Context][]Action{
 		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune,
 		ActGlobalPalette, ActGlobalSwitcher, ActGlobalJumpNeedsInput, ActGlobalRestoreRail},
 	CtxTaskList: {ActTaskNew, ActTaskDown, ActTaskUp, ActTaskStatusAdv, ActTaskStatusRev, ActTaskArchive,
-		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera, ActTaskInbox, ActTaskArtifacts, ActTaskMoveAccount},
+		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskExpandAll, ActTaskFilter, ActTaskHera, ActTaskInbox, ActTaskArtifacts, ActTaskMoveAccount},
 	CtxAgent: {ActAgentLinks, ActAgentArtifacts, ActAgentSession, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,
 		ActAgentPaneLeft, ActAgentPaneRight, ActAgentTaskPrev, ActAgentTaskNext,
 		ActAgentScrollUp, ActAgentScrollDown, ActAgentScrollPgUp, ActAgentScrollPgDn, ActAgentScrollEnd},

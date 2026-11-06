@@ -92,7 +92,8 @@ type SwitcherSeed struct {
 	// input.
 	CurrentTaskID string
 	// TasksExpanded is the real Tasks list's expanded project (Expanded()).
-	TasksExpanded string
+	TasksExpanded  string
+	TasksExpandAll bool
 	// Rail is the real Projects rail to copy folds from (nil → defaults).
 	Rail *hera.Rail
 }
@@ -164,6 +165,7 @@ func NewSwitcherPopup(feed SwitcherFeed, seed SwitcherSeed) *SwitcherPopup {
 	p.rail.SetPanelTitle("Projects")
 	p.tasks.SetHideHeraManaged(true)
 	p.tasks.SetExpanded(seed.TasksExpanded)
+	p.tasks.SetExpandAll(seed.TasksExpandAll)
 	p.rail.CopyFoldStateFrom(seed.Rail)
 	p.feed(feed)
 	if p.tasks.SelectedTask() == nil && len(p.tasks.VisibleTaskIDs()) == 0 {

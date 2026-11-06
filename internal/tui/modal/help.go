@@ -62,6 +62,9 @@ type helpGroup struct {
 var helpLayout = []helpGroup{
 	{title: "Task List", ctx: keymap.CtxTaskList, extra: []HelpBinding{
 		{"Enter", "open agent view"},
+		{"Space / Enter (Tasks rail header)", "focus project / toggle Archive"},
+		{"Tab (Tasks rail)", "focus selected terminal; terminal Tab stays agent input"},
+		{"ctrl+q (Tasks rail enabled)", "return focus to rail; keep terminal visible"},
 		{"Cmd+→", "enter Projects rail (Appearance option)"},
 	}},
 	{title: "Global", ctx: keymap.CtxGlobal},

@@ -578,7 +578,7 @@ func (a *App) deactivatePluginView() {
 	a.pluginHelpRequested = false
 
 	a.mode = modeTaskList
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 }
 

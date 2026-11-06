@@ -119,6 +119,20 @@ func TestResolve_Unbound(t *testing.T) {
 	testutil.False(t, ok)
 }
 
+func TestTasksExpandAllRebind(t *testing.T) {
+	km := DefaultKeymap()
+	act, ok := km.Resolve(CtxTaskList, ev(tcell.KeyRune, 'F', 0))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, act, ActTaskExpandAll)
+	km, warnings := Build(config.Keybindings{TaskList: map[string]string{"expand_all": "x"}})
+	testutil.Equal(t, len(warnings), 0)
+	act, ok = km.Resolve(CtxTaskList, ev(tcell.KeyRune, 'x', 0))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, act, ActTaskExpandAll)
+	_, ok = km.Resolve(CtxTaskList, ev(tcell.KeyRune, 'F', 0))
+	testutil.Equal(t, ok, false)
+}
+
 func TestBuild_OverrideApplied(t *testing.T) {
 	kb := config.Keybindings{TaskList: map[string]string{"new": "x"}}
 	km, warns := Build(kb)

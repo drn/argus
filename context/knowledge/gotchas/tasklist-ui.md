@@ -1,5 +1,11 @@
 ## Task List & UI
 
+- **The optional Tasks rail reuses the main task list and agent pane; never draw either primitive in both the legacy and rail pages in one frame.** Rail browsing binds without auto-start or a daemon focus claim; terminal entry claims focus, while Ctrl+Q clears it and leaves the pane visible.
+
+- **Reconcile Tasks rail selection after refresh releases `App.mu`, never from `Draw`.** Binding can switch pages and restore focus; tview holds its application lock while painting, so a draw-time page/focus change can deadlock. Narrow-window painting only updates logical region state; input routing repairs an obsolete focused child before forwarding the next event.
+
+- **Tasks `F` is a remembered expansion mode, separate from the `ui.tasks_rail` layout preference.** Restore/save `ui.tasks_expand_all` only through the local DB guard, feed the mode into the jump switcher's private task list, and preserve Archive's outer fold; filter/terminal input must keep literal F.
+
 - **Project-first navigation is enabled per opening, not in the shared form constructor:** only independent Tasks/new-coordinator openings opt in, so worker spawn and zero/one-project bypass keep existing Escape semantics. Re-entry empties only the project filter (prompt/name survive), acceptance calls `projACAccept` → `onProjectChanged`, and recency uses the existing task snapshot's maximum `CreatedAt` per project without changing the full field's alphabetical order.
 - **Async new-task branch results must match both the originating form pointer and its current `branchPath`.** Escape/re-pick and cancel/reopen can otherwise install a previous project's branches in the next form; checking only that some form is open is insufficient.
 - **The `l` / `L` keys are scoped per-tab. On the agent view, `l` opens the URL link picker (`openAgentLinks`). The task list itself does NOT bind `l`/`L`.** A new tab adding `l` would need an explicit `header.ActiveTab()` guard in `handleGlobalKey` to avoid shadowing; routing today relies on focus living on the active page's widget, which dispatches the key locally. (The retired DAG tab's `l`/`L` link/unlink keys are gone with depends_on.)

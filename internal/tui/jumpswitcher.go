@@ -57,7 +57,7 @@ func (a *App) openJumpSwitcher() {
 	if a.heraPage != nil && !a.heraPage.IsRemote() {
 		a.heraPage.Refresh()
 	}
-	seed := SwitcherSeed{CurrentTaskID: current, TasksExpanded: a.tasklist.Expanded()}
+	seed := SwitcherSeed{CurrentTaskID: current, TasksExpanded: a.tasklist.Expanded(), TasksExpandAll: a.tasklist.ExpandAll()}
 	if a.heraPage != nil {
 		seed.Rail = a.heraPage.Rail()
 	}
