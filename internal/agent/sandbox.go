@@ -66,6 +66,8 @@ const sandboxProfileBase = `(version 1)
 ; Blocking reads provides minimal security since (allow network*) is granted.
 (deny file-read* (subpath (string-append (param "HOME") "/.gnupg")))
 (deny file-read* (subpath (string-append (param "HOME") "/.aws")))
+; deny file-read* also covers stat; tools that probe for ~/.aws/credentials (omp) crash on EPERM. Metadata only: contents stay denied.
+(allow file-read-metadata (subpath (string-append (param "HOME") "/.aws")))
 (deny file-read* (subpath (string-append (param "HOME") "/.kube")))
 (deny file-read* (subpath (string-append (param "HOME") "/.config/gcloud")))
 (allow file-write* (regex #"^/dev/ptmx$"))

@@ -192,7 +192,10 @@ const (
 	//     MCP via a generated --plugin-dir plugin, skills via a --config
 	//     overlay; Argus default permission asks (omp defaults to yolo). A stale
 	//     supervisor launches omp as a custom command.
-	SupervisorSpawnSurface = 34
+	// 35: sandbox profile allows file-read-metadata on ~/.aws so omp's startup
+	//     stat no longer fails with EPERM. A stale supervisor spawns omp with the
+	//     old profile and it crashes on launch.
+	SupervisorSpawnSurface = 35
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -485,7 +488,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "1d05b03abf3213b94164f4d330acaaf4963c8921c6410b2de1e0c45434497cef"
+	SpawnSurfaceDigest  = "66be1a389caaf3346c4100535ad116a744d1f16e88e9dd8a944279441ea40be3"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 
