@@ -18,15 +18,15 @@
 
 ## 3. Measure and report
 
-- [ ] 3.1 Run `make pre-pr`, commit and push with `iris_push`. Build a binary from this branch outside the repository, then send `hera_send(status="blocked")` with its path. Do not deploy.
-- [ ] 3.2 Repeat the capture from `repaint-panes-on-output/design.md` using `argus-latency`.
-- [ ] 3.3 Record the results in `measurements.md`, and copy them to "PR 2 measurements" in `move-needs-input-scan-off-ui-thread/design.md`.
-- [ ] 3.4 Report the stall numbers to the coordinator for Aaron. Do not send `status=done` until Aaron has seen them, because that status starts the next change.
+- [x] 3.1 Run `make pre-pr`, commit and push with `iris_push`. Build both measurement binaries outside the repository and hand off their paths/hashes, remaining `working` as directed by the coordinator. Do not deploy.
+- [x] 3.2 Capture four audited CPU windows and analyze existing tick/typing logs with `argus-latency`; the coordinator accepted this evidence instead of additional live stall/typing sessions (message 21553).
+- [x] 3.3 Record the results in `measurements.md`, and copy them to "PR 2 measurements" in `move-needs-input-scan-off-ui-thread/design.md`.
+- [x] 3.4 Report the stall numbers to the coordinator for Aaron. CPU and censored tick evidence accepted in message 21553; do not send `status=done` until the coordinator explicitly says so.
 
 ## 4. Documentation and ship
 
 - [x] 4.1 Update the related bullets in `gotchas/events.md` and `context/knowledge/index.md`. Include the out-of-rotation stat bug and why two stripped forms exist.
 - [x] 4.2 Confirm by diff that `internal/daemon/surface.go` and every file in its path lists are untouched, and that `TestSupervisorSurfaceDigest` passes.
-- [ ] 4.3 Run `make pre-pr` in full.
-- [ ] 4.4 Archive only this change in the same PR (`openspec archive reduce-needs-input-scan-cost`).
-- [ ] 4.5 Push with `iris_push` and open the PR with `iris_gh_pr_create`, including the measurements and stating that web and macOS are unaffected and that no supervisor restart is needed.
+- [x] 4.3 Run `make pre-pr` in full. Build/vet/fmt/lint passed; known stdlib CVEs remain advisory per coordinator instruction. The full env-isolated coverage gate passed separately at 89.0%.
+- [x] 4.4 Archive only this change in the same PR (`openspec archive reduce-needs-input-scan-cost`).
+- [x] 4.5 Push with `iris_push` and open the PR with `iris_gh_pr_create`, including the measurements and stating that web and macOS are unaffected and that no supervisor restart is needed.

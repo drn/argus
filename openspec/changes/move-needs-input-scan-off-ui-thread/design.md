@@ -123,7 +123,27 @@ The scanner recovers panics, logs them with `[scan]`, keeps the last result, and
 
 ### PR 2 measurements
 
-To be filled in from `reduce-needs-input-scan-cost` before implementation starts.
+CPU captures from `reduce-needs-input-scan-cost`, 2026-11-06, normal Go 1.26.8; no heavy jobs ran during profiling. Base is freshly built master `1136f0ba`; PR2 is implementation commit `b10b9dad`. Each capture independently verified the listener executable and passed the UX-log view/resize/restart/bind/selection audit.
+
+| View | Base CPU | PR2 CPU | Delta |
+| --- | --- | --- | --- |
+| Busy split, same 600-line/24s producer | 17.49% | 15.16% | -2.33 percentage points; passes Base +10-point ceiling |
+| Idle Tasks, groups collapsed, no selection/producer | 4.34% | 1.24% | -3.10 percentage points (-71.4%) |
+
+| Nested cumulative CPU row | Busy Base → PR2 | Idle Base → PR2 |
+| --- | --- | --- |
+| `refreshTasksWithIDs` | 420 → 120ms (-71.4%) | 500 → 120ms (-76.0%) |
+| `detectNeedsInputSticky` | 370 → 40ms (-89.2%) | 410 → 50ms (-87.8%) |
+| `readSessionLogRawTail` | 200 → 10ms (-95.0%) | 170 → 10ms (-94.1%) |
+| `os.Open` | 210 → 10ms (-95.2%) | 210 → 10ms (-95.2%) |
+
+Rows are nested, not additive. The 20-second profiles started at 09:05:28 / 09:21:53 PST for Base busy/idle, and 09:24:39 / 09:30:18 for PR2 busy/idle. One-minute setup/start loads were 3.22 / 3.68 / 4.58 / 3.68 respectively; complete load averages, window audits, raw artifact paths and render telemetry are recorded in `openspec/changes/archive/2026-11-06-reduce-needs-input-scan-cost/measurements.md`.
+
+The coordinator accepted existing tick/typing-log analysis in message 21553. The tick logger is unchanged and logs only ≥16ms closures. In matched 204-second Projects split windows, Base logs all 204 ticks while PR2 logs 32: **172/204 (84.3%) are now below 16ms**. Whole-window p50 is 22.704ms → **<16ms** (exact PR2 value censored); p90 is 111.885 → 101.486ms and p99 is 121.228 → 115.166ms. The actual idle CPU windows each contain 20 periodic refreshes: Base p50/p90 25.506/29.965ms; PR2's 20 closures are all below 16ms.
+
+**The ≥80ms tail remains a separate Hera rail problem:** 31/204 ticks in each matched window, all paired to the unchanged synchronous rail rebuild. Roughly 100ms `HeraPage.doRefresh` includes 19 coordinator-board snapshots on this fleet and is triggered by global `DataVersion` changes or runtime-map changes. The named follow-up is **`reduce-hera-rail-rebuild-stalls`**, owned by the coordinator. Moving only the needs-input scan will not remove that rail work.
+
+Typing evidence is sparse and unmatched: Base Hera coordinator n=35, total p50 5.969ms; PR2 n=14, p50 7.585ms. The six PR2 samples around 09:29:59 have total p50 8.420ms, queue max 0.033ms and stall max 5.384ms. No latency improvement is claimed. None of the CPU windows contains typing samples. Full evidence and caveats are in `openspec/changes/archive/2026-11-06-reduce-needs-input-scan-cost/measurements.md`; implementation of this next change still waits for Aaron's decision in light of the cheaper scan and separate rail follow-up.
 
 ## Frontend parity
 
