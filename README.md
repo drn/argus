@@ -187,6 +187,7 @@ below. The `?` overlay always shows your active bindings.
 | `c`       | Open copy menu (copy task name or prompt to clipboard)          |
 | `r`       | Rename task (display name only; branch/worktree stay locked)    |
 | `H`       | Toggle visibility of Hera-managed tasks (workers + coordinators; visible inline by default, each with a hera-role indicator — press `H` to hide) |
+| `F`       | Keep all Tasks projects open / return to only the focused project (both Tasks layouts; remembered locally across restarts; rebind with `tasklist.expand_all`) |
 | `i`       | View the task's message inbox (read-only): task messages + hera messages to any role it is/was bound to, read and unread, with delivery state. `r` reloads, `Esc`/`q` closes; never marks anything read. Local mode only |
 | `v`       | Browse the selected task's registered artifacts (`r` refresh, `Enter` preview/open, `o` open externally) |
 | `>`       | Move the selected Claude task to another [account](#moving-a-task-to-another-account) and resume its conversation there (picker shows each account's 5-hour / weekly usage; `auto` picks the lowest). Needs no tokens on the current account; a busy agent is interrupted after a warning |
@@ -204,6 +205,8 @@ below. The `?` overlay always shows your active bindings.
 | `q`       | Quit                                                            |
 
 #### Agent View
+
+Settings → Appearance → **Persistent task rail** (`[ui] tasks_rail = true`, default off) keeps a 34-column project task list visible beside the agent. Browse existing sessions without starting them; Enter enters the selected task. Tab enters the selected terminal, terminal Tab/Shift+Tab stay agent input, Ctrl+Q returns focus to the rail, and Cmd+Left/Right traverse the rail and visible content panes. Space/Enter focuses and expands a project header, or toggles Archive. `F` keeps all projects open until pressed again. Agent zoom keeps the rail visible.
 
 | Key                   | Action                                                                    |
 | --------------------- | ------------------------------------------------------------------------- |
@@ -1178,6 +1181,7 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 | `coordinator_board` | bool | `true` | Automatically land on unread human board at coordinator selection and show a mailbox marker. OFF keeps plan landing and the coordinator marker. Explicit `p` toggle remains available. |
 | `spinner_style` | string | `"progress"` | Spinner animation: `progress`, `dots`, `braille`, or `classic`. |
 | `default_agent_zoom` | bool | `true` | Resting agent-view layout: `true` opens single-pane/zoomed (side panels collapsed); `false` opens the 1:3:1 three-pane layout. `Ctrl+Z` toggles at runtime. |
+| `tasks_rail` | bool | `false` | Keep a 34-column Tasks rail beside the selected agent; Appearance → Persistent task rail applies live. |
 | `cross_tab_arrows` | bool | `false` | Opt-in. One continuous `Cmd+Left`/`Cmd+Right` chain: Tasks list / agent view (unzoomed or zoomed) ⇄ Projects rail ⇄ coordinator pane ⇄ agent pane ⇄ Settings left pane ⇄ Settings right pane. Entering from the left lands on the leftmost pane, from the right on the rightmost. Never fires while a modal, filter / inline edit has focus, or while a Projects pane is fullscreen. |
 | `theme` | string | `"default"` | ⚠️ Color theme name. Only `default` exists today and nothing reads this yet — reserved for a future theming layer. |
 | `show_elapsed` | bool | `true` | ⚠️ Reserved — show elapsed time on task rows. Not yet consumed. |
@@ -1314,6 +1318,7 @@ permission_mode = "bypass-active"
 [ui]
 spinner_style = "braille"
 default_agent_zoom = true
+tasks_rail = false
 cross_tab_arrows = false
 
 # Maps merge by key; an existing key is replaced wholesale, so list every

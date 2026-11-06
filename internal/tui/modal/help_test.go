@@ -62,6 +62,9 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "compose reply to coordinator (never submits)")
 	testutil.Contains(t, body, "dismiss board item")
 	testutil.Contains(t, body, "Task List")
+	testutil.Contains(t, body, "toggle all Tasks projects open")
+	testutil.Contains(t, body, "focus project / toggle Archive")
+	testutil.Contains(t, body, "return focus to rail; keep terminal visible")
 	testutil.Contains(t, body, "Projects View (rail)")
 	testutil.Contains(t, body, "Agent View")
 	// Plan-DAG view keys (Stage 7): the plan diagram nav + fan-out + drill must

@@ -53,6 +53,7 @@ const (
 	srAgentZoom
 	srCrossTabArrows
 	srProjectFirst
+	srTasksRail
 	srVaultPath
 	srUpdateArgus
 	srSourcePath
@@ -343,6 +344,8 @@ type SettingsView struct {
 	crossTabArrows    bool
 	projectFirst      bool
 	projectFirstError string
+	tasksRail         bool
+	tasksRailError    string
 
 	// Default permission mode injected into Claude-style backend commands
 	// (one of config.PermissionModes). Empty falls back to the bypass-active
@@ -477,6 +480,7 @@ type SettingsView struct {
 	// OnCrossTabArrowsToggle fires after persisting the Appearance preference
 	// so the App's key dispatcher can apply the new value immediately.
 	OnCrossTabArrowsToggle func(enabled bool)
+	OnTasksRailToggle      func(enabled bool)
 
 	// OnBranchChange fires whenever the active category changes or focus
 	// moves between the left rail and the right pane — i.e. whenever the
@@ -693,6 +697,7 @@ func (sv *SettingsView) Refresh() {
 	sv.defaultAgentZoom = cfg.UI.DefaultAgentZoom
 	sv.crossTabArrows = cfg.UI.CrossTabArrows
 	sv.projectFirst = cfg.UI.ProjectFirst
+	sv.tasksRail = cfg.UI.TasksRail
 
 	// Default permission mode. Fall back to the config default when unset so
 	// the row always reflects what BuildCmd will actually inject.
@@ -1282,6 +1287,11 @@ func (sv *SettingsView) rebuildRows() {
 			arrowLabel = "Cmd+arrows traverse all tabs/panes: On"
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srCrossTabArrows, label: arrowLabel, key: "_cross_tab_arrows"})
+		railLabel := "Persistent task rail: Off"
+		if sv.tasksRail {
+			railLabel = "Persistent task rail: On"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srTasksRail, label: railLabel, key: "_tasks_rail"})
 		projectLabel := "Project first: Off"
 		if sv.projectFirst {
 			projectLabel = "Project first: On"
@@ -1763,6 +1773,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		case srCrossTabArrows:
 			sv.toggleCrossTabArrows()
 			return true
+		case srTasksRail:
+			sv.toggleTasksRail()
+			return true
 		case srProjectFirst:
 			sv.toggleProjectFirst()
 			return true
@@ -2185,6 +2198,9 @@ func (sv *SettingsView) handleEnter() bool {
 		return true
 	case srCrossTabArrows:
 		sv.toggleCrossTabArrows()
+		return true
+	case srTasksRail:
+		sv.toggleTasksRail()
 		return true
 	case srProjectFirst:
 		sv.toggleProjectFirst()
@@ -3205,6 +3221,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderAgentZoomDetail(screen, x, y, w, h)
 	case srCrossTabArrows:
 		sv.renderCrossTabArrowsDetail(screen, x, y, w, h)
+	case srTasksRail:
+		sv.renderTasksRailDetail(screen, x, y, w, h)
 	case srProjectFirst:
 		sv.renderProjectFirstDetail(screen, x, y, w, h)
 	case srPermissionMode:

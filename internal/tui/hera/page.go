@@ -20,7 +20,7 @@ import (
 
 // heraRailWidth is the fixed character width of the navigation rail (matches
 // Hera's RailWidth ballpark, trimmed for Argus chrome).
-const heraRailWidth = 34
+const heraRailWidth = widget.RailWidth
 
 // Base border titles for the two right-hand panes. Draw appends a clipboard
 // affordance to the focused terminal pane's title when a payload is staged.

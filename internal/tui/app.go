@@ -337,10 +337,14 @@ type App struct {
 	macAppsCache []macapps.App
 
 	// Layout containers
-	root      *tview.Flex
-	taskPage  *taskview.TaskPage
-	agentPage *tview.Flex
-	pages     *tview.Pages
+	root             *tview.Flex
+	taskPage         *taskview.TaskPage
+	tasksRailPage    *taskview.RailPage
+	tasksRailEnabled bool
+	tasksRailViewing bool // protected by mu for redraw-loop readers
+	tasksRailPending bool
+	agentPage        *tview.Flex
+	pages            *tview.Pages
 
 	// State
 	mode           viewMode
@@ -800,6 +804,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		app.crossTabArrows = enabled
 		uxlog.Log("[tui] cross-tab arrows enabled=%v", enabled)
 	}
+	app.settings.OnTasksRailToggle = app.setTasksRail
 	app.settings.OnStreamFocus = app.openStreamSection
 	app.settings.OnStreamBlur = app.closeStreamSection
 	app.settings.SetPluginSubmit(app.submitPluginSection)
@@ -808,10 +813,14 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	cfg := database.Config()
 	widget.SetActiveSpinner(cfg.UI.SpinnerStyle)
 	app.crossTabArrows = cfg.UI.CrossTabArrows
+	app.tasksRailEnabled = cfg.UI.TasksRail
 	app.activeKeymap() // prime the keymap (logs any config warnings at startup)
 
 	app.buildUI()
 	app.refreshTasks()
+	if app.tasksRailEnabled {
+		app.showTasksRail()
+	}
 
 	return app
 }
@@ -822,6 +831,23 @@ func (a *App) buildUI() {
 	a.statusbar = widget.NewStatusBar()
 
 	a.tasklist = taskview.NewTaskListView()
+	if d, ok := a.db.(*db.DB); ok {
+		all, err := d.LoadTasksExpandAll()
+		if err != nil {
+			uxlog.Log("[tasks-rail] load expansion failed: %v", err)
+		} else {
+			a.tasklist.SetExpandAll(all)
+		}
+	}
+	a.tasklist.OnExpandAllToggle = func(enabled bool) {
+		if d, ok := a.db.(*db.DB); ok {
+			if err := d.SaveTasksExpandAll(enabled); err != nil {
+				uxlog.Log("[tasks-rail] save expansion failed: %v", err)
+			} else {
+				uxlog.Log("[tasks-rail] saved expansion=%v", enabled)
+			}
+		}
+	}
 	if d, ok := a.db.(*db.DB); ok {
 		// Restore the persisted hide-hera-managed toggle (persist-tasks-view-ui-state).
 		// Local-only: remote mode (apistore) has no config table seam, so the
@@ -836,7 +862,13 @@ func (a *App) buildUI() {
 	a.tasklist.Keys = a.activeKeymap
 	a.tasklist.OnSelect = func(task *model.Task) { a.onTaskSelect(task, true) }
 	a.tasklist.OnNew = a.onNewTask
-	a.tasklist.OnCursorChange = a.onTaskCursorChange
+	a.tasklist.OnCursorChange = func(task *model.Task) {
+		if a.tasksRailEnabled && a.header.ActiveTab() == widget.TabTasks {
+			a.previewRailTask(task)
+			return
+		}
+		a.onTaskCursorChange(task)
+	}
 	a.tasklist.OnLayoutChange = func() { a.forceRedraw("tasklist rows changed") }
 	a.tasklist.OnFilterToggle = func() { a.forceRedraw("tasklist filter toggled") }
 	a.tasklist.OnHeraManagedToggle = func(hidden bool) {
@@ -910,11 +942,17 @@ func (a *App) buildUI() {
 
 	// Wire mouse click callbacks so clicking a panel switches agentFocus.
 	a.filePanel.OnClick = func() {
+		if a.tasksRailEnabled && a.tasksRailViewing {
+			a.enterTasksRailTerminal()
+		}
 		a.agentFocus = focusFiles
 		a.updateFocusIndicators()
 	}
 	a.filePanel.OnLayoutChange = func() { a.forceRedraw("filepanel rows changed") }
 	a.agentPane.OnClick = func() {
+		if a.tasksRailEnabled && a.tasksRailViewing {
+			a.enterTasksRailTerminal()
+		}
 		a.agentFocus = focusTerminal
 		a.updateFocusIndicators()
 	}
@@ -961,6 +999,10 @@ func (a *App) buildUI() {
 	a.agentPage = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.agentHeader, 1, 0, false).
 		AddItem(a.agentPanels, 0, 1, true)
+	a.tasksRailPage = taskview.NewRailPage(a.tasklist, a.agentPage, a.agentPane)
+	a.tasksRailPage.PaneFocused = func() bool { return a.mode == modeAgent }
+	a.tasksRailPage.OnRailFocus = a.focusTasksRail
+	a.tasklist.SetRailMode(a.tasksRailEnabled)
 
 	// Native Hera view (M6a). The rail reads the local *db.DB hera store; in
 	// --remote mode (a.db is *apistore.Store, which has no hera methods) the
@@ -1087,6 +1129,7 @@ func (a *App) buildUI() {
 
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
+		AddPage("tasks-rail", a.tasksRailPage, true, false).
 		AddPage("agent", a.agentPage, true, false).
 		AddPage("hera", a.heraPage, true, false).
 		AddPage("settings", a.settingsPage, true, false)
@@ -1298,7 +1341,7 @@ func (a *App) closeRestartDaemonPrompt() {
 	a.mode = modeTaskList
 	a.restartDaemonModal = nil
 	a.pages.RemovePage("restartdaemon")
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 }
 
@@ -1415,7 +1458,7 @@ func (a *App) closeRestartSupervisorPrompt() {
 		return
 	}
 	if page == "tasks" || page == "restartdaemon" { // restartdaemon: skew modal already dismissed
-		a.pages.SwitchToPage("tasks")
+		a.showTasksPage()
 		a.tapp.SetFocus(a.tasklist)
 		return
 	}
@@ -1706,7 +1749,7 @@ func (a *App) onTick() {
 			}
 		}
 		taskID := ""
-		if a.mode == modeAgent {
+		if a.mode == modeAgent || a.tasksRailViewing {
 			taskID = a.agentState.TaskID
 		}
 		a.mu.Unlock()
@@ -1716,6 +1759,7 @@ func (a *App) onTick() {
 		// a db.Config() read. Runs on the tview goroutine (this is inside the
 		// QueueUpdateDraw closure), matching the keymap cache's threading.
 		a.refreshKeymap()
+		a.reconcileTasksRail()
 
 		// Refresh task list side panels.
 		// Note: refreshPreview can be expensive for large session logs on
@@ -2207,6 +2251,7 @@ func (a *App) isViewingTaskSession(taskID string) bool {
 		mode = a.jumpSwitcherReturnMode
 	}
 	viewingAgent := mode == modeAgent && a.agentState.TaskID == taskID
+	viewingAgent = viewingAgent || (a.tasksRailViewing && a.agentState.TaskID == taskID)
 	viewingHeraTab := mode == modeTaskList && a.header.ActiveTab() == widget.TabHera
 	a.mu.Unlock()
 	if viewingAgent {
@@ -2480,7 +2525,7 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 	// clear the session so the user sees the exited state and can resume in place
 	// rather than being bounced to the list with no explanation.
 	a.mu.Lock()
-	viewing := a.mode == modeAgent && a.agentState.TaskID == taskID
+	viewing := (a.mode == modeAgent || a.tasksRailViewing) && a.agentState.TaskID == taskID
 	a.mu.Unlock()
 	if viewing {
 		if cleanExit {
@@ -3380,6 +3425,7 @@ func sessionBlockedOnPrompt(taskID string, idle bool) bool {
 // list. IMPORTANT: This blocks on RPC calls — NEVER call from the tview main
 // goroutine. Use refreshTasksAsync instead for any UI-thread call site.
 func (a *App) refreshTasks() {
+	defer a.reconcileTasksRail()
 	runningIDs, idleIDs := a.runner.RunningAndIdle()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -3394,6 +3440,7 @@ func (a *App) refreshTasksAsync() {
 	go func() {
 		runningIDs, idleIDs := a.runner.RunningAndIdle()
 		a.tapp.QueueUpdateDraw(func() {
+			defer a.reconcileTasksRail()
 			// If a session was started between the RPC snapshot and now,
 			// the runningIDs are stale — pass nil to skip reconciliation.
 			// Same guard as onTick to prevent the race where an async
@@ -3420,6 +3467,7 @@ func (a *App) refreshTasksAsync() {
 // call from the tview main goroutine. Use this when only DB state changed
 // (e.g. task deleted) and running session state is unchanged.
 func (a *App) refreshTasksLocal() {
+	defer a.reconcileTasksRail()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.refreshTasksWithIDs(a.runningIDs, a.idleIDs, false)
@@ -4184,6 +4232,11 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		a.tapp.Stop()
 		return nil
 	case tcell.KeyCtrlQ:
+		if a.tasksRailEnabled && a.tasksRailViewing {
+			a.focusTasksRail()
+			a.tapp.SetFocus(a.tasksRailPage)
+			return nil
+		}
 		if a.mode == modeAgent {
 			// 3-level exit: diff → files panel → agent view
 			if a.agentPane.InDiffMode() {
@@ -4202,6 +4255,9 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
+	if a.handleTasksRailKey(event) {
+		return nil
+	}
 	// Optional boundary navigation makes Tasks and the Hera rail behave like
 	// adjacent horizontal regions without reclaiming modified arrows from Hera's
 	// coordinator/agent panes or either view's filter input.
@@ -5103,6 +5159,12 @@ func (a *App) persistLastTab(t widget.Tab) {
 
 // switchTab changes the active top-level tab.
 func (a *App) switchTab(t widget.Tab) {
+	if t != widget.TabTasks && a.tasksRailViewing {
+		a.focusTasksRail()
+		a.mu.Lock()
+		a.tasksRailViewing = false
+		a.mu.Unlock()
+	}
 	a.agentCrossReturn = nil // any other navigation forgets the agent-view hop
 	a.header.SetTab(t)
 	a.statusbar.SetTab(t)
@@ -5110,6 +5172,10 @@ func (a *App) switchTab(t widget.Tab) {
 
 	switch t {
 	case widget.TabTasks:
+		if a.tasksRailEnabled {
+			a.showTasksRail()
+			return
+		}
 		if a.mode == modeAgent {
 			// exitAgentView is a complete "return to tasks" primitive: resets
 			// mode, tab state, page, and focus. Early return skips the
@@ -5118,7 +5184,7 @@ func (a *App) switchTab(t widget.Tab) {
 			return
 		}
 		a.mode = modeTaskList
-		a.pages.SwitchToPage("tasks")
+		a.showTasksPage()
 		a.tapp.SetFocus(a.tasklist)
 	case widget.TabHera:
 		a.mode = modeTaskList
@@ -5342,6 +5408,7 @@ func (a *App) resolveSandboxed(task *model.Task) bool {
 // while the worktree is being created. This eliminates the lag between form
 // close and agent view appearing.
 func (a *App) enterPendingAgentView(task *model.Task) {
+	a.tasksRailPending = a.tasksRailEnabled
 	uxlog.Log("[tui] entering pending agent view for task %s (%s)", task.ID, task.Name)
 
 	a.mu.Lock()
@@ -5372,21 +5439,43 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.root.ResizeItem(a.header, 0, 0)
 	a.pages.SwitchToPage("agent")
 	a.tapp.SetFocus(a.agentPane)
+	if a.tasksRailEnabled {
+		a.mu.Lock()
+		a.tasksRailViewing = true
+		a.mu.Unlock()
+		a.tasksRailPage.Bound = true
+		a.root.ResizeItem(a.header, 1, 0)
+		a.pages.SwitchToPage("tasks-rail")
+		a.tapp.SetFocus(a.tasksRailPage)
+	}
 }
 
 // onTaskSelect handles Enter on a task — enters the agent view.
 func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
+	if a.tasksRailEnabled {
+		a.tasklist.SelectByID(task.ID)
+	}
+	a.bindTaskAgent(task, autoStart, true)
+}
+
+func (a *App) bindTaskAgent(task *model.Task, autoStart, focus bool) {
+	a.tasksRailPending = false
 	uxlog.Log("[tui] entering agent view for task %s (%s)", task.ID, task.Name)
 
 	// User is viewing the agent — clear the "idle unvisited" flag so the task
 	// no longer displays as "in review" in the task list.
-	delete(a.idleUnvisited, task.ID)
-	a.viewedWhileAgent[task.ID] = true
-	a.syncIdleUnvisited()
+	if focus {
+		delete(a.idleUnvisited, task.ID)
+		a.viewedWhileAgent[task.ID] = true
+		a.syncIdleUnvisited()
+	}
 
 	a.mu.Lock()
 	prevTaskID := a.agentState.TaskID
 	a.mode = modeAgent
+	if !focus {
+		a.mode = modeTaskList
+	}
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
@@ -5397,7 +5486,7 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 		if prevTaskID != "" && prevTaskID != task.ID {
 			a.focusTracker.SetFocused(prevTaskID, false)
 		}
-		a.focusTracker.SetFocused(task.ID, true)
+		a.focusTracker.SetFocused(task.ID, focus)
 	}
 	// Open with the configured default layout (zoomed single-pane by default).
 	// Ctrl+Z toggles the side panels at runtime regardless.
@@ -5426,13 +5515,27 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 		a.agentPane.SetSession(nil)
 	}
 
-	a.agentPane.SetFocused(true)
+	a.agentPane.SetFocused(focus)
 	a.filePanel.SetFocused(false)
 
 	// Hide the tab header in agent view — only the agent header is shown.
 	a.root.ResizeItem(a.header, 0, 0)
 	a.pages.SwitchToPage("agent")
-	a.tapp.SetFocus(a.agentPane)
+	if a.tasksRailEnabled {
+		a.mu.Lock()
+		a.tasksRailViewing = true
+		a.mu.Unlock()
+		a.tasksRailPage.Bound = true
+		a.tasklist.SetFocused(!focus)
+		a.tasklist.SetCursorDimmed(focus)
+		a.root.ResizeItem(a.header, 1, 0)
+		a.pages.SwitchToPage("tasks-rail")
+		if focus {
+			a.tapp.SetFocus(a.tasksRailPage)
+		}
+	} else {
+		a.tapp.SetFocus(a.agentPane)
+	}
 	// Reconcile PTY size on entry so a session whose PTY is stuck at a stale
 	// width (dropped SIGWINCH, started in a smaller window, etc.) gets resized
 	// to the current panel dimensions on the next Draw.
@@ -5452,7 +5555,9 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 		// different width" case. If the session is idle, kill it so the
 		// deferred restart in handleSessionExitUI brings it back at the
 		// current PTY and the agent re-renders the conversation history.
-		a.maybeKickRerender(task, sess)
+		if focus {
+			a.maybeKickRerender(task, sess)
+		}
 		return
 	}
 	// No live session — clear any leaked pending-restart marker so a future
@@ -6132,6 +6237,16 @@ func (a *App) createTaskTransactional(input agent.CreateInput) (*model.Task, err
 // MUST be called on the tview main goroutine — GetInnerRect is not safe to
 // call concurrently with Draw.
 func (a *App) computePTYSize() (rows, cols uint16) {
+	if a.tasksRailEnabled {
+		_, _, w, h := a.root.GetRect()
+		if w > widget.RailWidth && h > 0 {
+			w -= widget.RailWidth
+			if !a.agentZen {
+				w = w * 3 / 5
+			}
+			return PTYSizeForRect(Rect{W: w, H: max(h-3, 1)})
+		}
+	}
 	rows, cols = ptySizeFromHostTerm(term.GetSize(int(os.Stdout.Fd())))
 	if rows > 0 && cols > 0 {
 		return
@@ -6445,7 +6560,7 @@ func (a *App) startSession(task *model.Task) {
 	// agent view is active for this task. When startSession is called from
 	// the background (user navigated away during worktree creation), the
 	// pane isn't visible — onTaskSelect will attach when the user returns.
-	if a.mode == modeAgent && a.agentState.TaskID == task.ID {
+	if (a.mode == modeAgent || a.tasksRailViewing) && a.agentState.TaskID == task.ID {
 		a.agentPane.SetSession(sess)
 		// Force a PTY resize repost on the next Draw. Covers the auto-start
 		// path (pending view → session starts while user is watching) where
@@ -6499,7 +6614,7 @@ func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 func (a *App) redrawLoopShouldExit(taskID string, myGen uint64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
+	stillViewing := (a.mode == modeAgent || a.tasksRailViewing) && a.agentState.TaskID == taskID
 	superseded := a.redrawLoopGen[taskID] != myGen
 	return !stillViewing || superseded
 }
@@ -6516,7 +6631,7 @@ func (a *App) closeNewTaskForm() {
 		a.tapp.SetFocus(a.heraPage)
 		return
 	}
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 }
 
@@ -6889,7 +7004,7 @@ func (a *App) closeConfirmDelete() {
 	a.mode = modeTaskList
 	a.confirmDeleteModal = nil
 	a.pages.RemovePage("confirmdelete")
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 }
 
@@ -6994,7 +7109,7 @@ func (a *App) closeErrorModal() {
 	case widget.TabHera:
 		a.focusHeraTab2Page()
 	default:
-		a.pages.SwitchToPage("tasks")
+		a.showTasksPage()
 		a.tapp.SetFocus(a.tasklist)
 	}
 }
@@ -7037,7 +7152,7 @@ func (a *App) closeForkModal() {
 	a.mode = modeTaskList
 	a.forkModal = nil
 	a.pages.RemovePage("forktask")
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 }
 
@@ -7107,7 +7222,7 @@ func (a *App) closeRenameModal() {
 	a.renameModal = nil
 	a.renameTask = nil
 	a.pages.RemovePage("renametask")
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 }
 
@@ -7163,7 +7278,7 @@ func (a *App) closeCopyChoiceModal() {
 	a.copyChoiceModal = nil
 	a.copyChoiceTask = nil
 	a.pages.RemovePage("copychoice")
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 }
 
@@ -7878,7 +7993,7 @@ func (a *App) closeConfirmPrune() {
 	a.mode = modeTaskList
 	a.confirmPruneModal = nil
 	a.pages.RemovePage("confirmprune")
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 }
 
@@ -7965,6 +8080,7 @@ func (a *App) pruneCompletedTasks() {
 			}
 			a.refreshTasksWithIDs(runningIDs, idleIDs, false)
 			a.mu.Unlock()
+			a.reconcileTasksRail()
 		})
 	}()
 }
@@ -8033,6 +8149,11 @@ func (a *App) navigateAgentTask(direction int) {
 // exitAgentView returns to the task list. Always resets the active tab to
 // widget.TabTasks so the global key handler routes navigation keys correctly.
 func (a *App) exitAgentView() {
+	if a.tasksRailEnabled && a.tasksRailViewing {
+		a.focusTasksRail()
+		a.tapp.SetFocus(a.tasksRailPage)
+		return
+	}
 	uxlog.Log("[tui] exiting agent view")
 	a.mu.Lock()
 	a.mode = modeTaskList
@@ -8056,7 +8177,7 @@ func (a *App) exitAgentView() {
 	a.header.SetTab(widget.TabTasks)
 	a.statusbar.SetTab(widget.TabTasks)
 	a.persistLastTab(widget.TabTasks)
-	a.pages.SwitchToPage("tasks")
+	a.showTasksPage()
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
 	// Also clear any transient info notice (e.g. the remote-fork

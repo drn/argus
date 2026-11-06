@@ -25,6 +25,8 @@ Tasks SHALL be grouped by project name (alphabetically), and partitioned into th
 
 ### Requirement: One active project expanded at a time
 
+The following focus-fold behavior and its scenarios SHALL apply in both Tasks layouts when `ui.tasks_expand_all` is false (the default). When true, every admitted active project SHALL remain expanded until the preference is toggled back, as specified in tasks-project-expansion. In the optional rail, project headers SHALL also be selectable and Space/Enter SHALL focus and expand that project. Pinned SHALL remain fully expanded in either mode.
+
 Within the Active section, exactly one project SHALL be expanded at a time, showing its task rows; all other active project folders SHALL be collapsed to their header. When no project is expanded and active projects exist, the first project SHALL auto-expand. The Pinned section SHALL always be fully expanded and SHALL never auto-collapse.
 
 #### Scenario: First active project auto-expands
@@ -43,6 +45,8 @@ Within the Active section, exactly one project SHALL be expanded at a time, show
 - **THEN** the Pinned section remains fully expanded
 
 ### Requirement: Cursor navigation skips non-task rows
+
+When `ui.tasks_rail` is false, the following task-only cursor navigation and its scenarios SHALL apply. When true, cursor movement SHALL also land on project headers and the Archive fold header, skip separators and non-foldable section labels, and notify the page when a header selection clears the task binding.
 
 Cursor movement (up/down via arrow keys or j/k) SHALL always land the cursor on a task row, skipping project headers, section headers, and separators. When moving up past a project header, the cursor SHALL land on the last task of the previous expanded project. The cursor change callback SHALL fire only when the cursor actually moves to a different position.
 
@@ -63,7 +67,9 @@ Cursor movement (up/down via arrow keys or j/k) SHALL always land the cursor on 
 
 ### Requirement: Archive section auto-expand on cursor entry
 
-The Archive section SHALL auto-expand when the cursor enters it and auto-collapse when the cursor leaves it. Within the expanded archive, exactly one archived project SHALL be expanded at a time, tracked independently from the active-section expansion.
+When `ui.tasks_rail` is false, the following automatic archive behavior and its scenarios SHALL apply. When true, Archive SHALL start collapsed, SHALL toggle with Space or Enter on its header, and SHALL retain its expansion when the cursor leaves. Its project folders SHALL follow the remembered Tasks expansion mode: only the focused project in focus-fold mode, every admitted archived project in all-open mode.
+
+The Archive section SHALL auto-expand when the cursor enters it and auto-collapse when the cursor leaves it. Within the expanded archive, exactly one archived project SHALL be expanded at a time in focus-fold mode, tracked independently from the active-section expansion; all archived projects SHALL remain expanded in all-open mode.
 
 #### Scenario: Archive expands when cursor enters
 
@@ -115,6 +121,8 @@ Pressing `/` SHALL activate a filter input mode. Typed text SHALL filter tasks b
 - **THEN** every project group containing a match is shown expanded, including archived groups
 
 ### Requirement: Task selection and status actions
+
+When `ui.tasks_rail` is false, the following Enter behavior and its scenarios SHALL apply. When true, Enter on a task SHALL focus its terminal using the persistent-task-rail lifecycle rules, including read-only viewing of complete or archived tasks. Status, archive, pin, rename, and copy actions SHALL remain the same in either layout.
 
 Pressing Enter on a non-complete task SHALL fire the select callback; Enter on a complete task SHALL do nothing. Keyboard actions on the selected task SHALL cycle status forward (`s`) and backward (`S`), toggle archive (`a`), toggle pinned (`P`), rename (`r`), and open the copy-choice menu (`c`). Each action SHALL fire its corresponding callback.
 
@@ -168,6 +176,8 @@ Each project header SHALL display a single aggregated status glyph computed from
 
 ### Requirement: Task detail panel
 
+The following detail-panel behavior SHALL apply in the default layout (`ui.tasks_rail` false). With the rail enabled, the existing agent content SHALL replace the list's separate metadata panel; this requirement SHALL NOT force an extra detail pane into the rail layout.
+
 The detail panel SHALL display metadata for the selected task: name, status (annotated "(running)" or "(idle)" for in-progress), and any present fields among project, branch, backend, sandbox flag, PID, worktree (truncated to fit), created date, elapsed time, and prompt. The PID field SHALL be shown only when the task has a nonzero recorded agent PID, and its value is the last PID recorded for that task's most recent session — it is not itself a liveness indicator (the running/idle status annotation remains the source of truth for whether the process is alive). When no task is selected, it SHALL display "No task selected" and SHALL not error.
 
 #### Scenario: No task selected shows placeholder
@@ -202,6 +212,8 @@ The detail panel SHALL display metadata for the selected task: name, status (ann
 
 ### Requirement: Task output preview panel
 
+The following snapshot-preview behavior SHALL apply in the default layout (`ui.tasks_rail` false). With the rail enabled, browsing SHALL bind the existing terminal pane according to the persistent-task-rail requirements instead of rendering this separate snapshot panel.
+
 The preview panel SHALL render a terminal snapshot of the selected task's most recent agent output, showing the latest visible lines (newest output at the bottom) clipped to the panel viewport. It SHALL show placeholder text — "No task selected", "Loading...", "Waiting for output...", or "Preview unavailable" — when there is no task, no output yet, or output cannot be rendered. Switching the previewed task SHALL clear the cached snapshot. Drawing SHALL never block or panic, including at zero dimensions.
 
 #### Scenario: Latest output lines are shown
@@ -225,6 +237,8 @@ The preview panel SHALL render a terminal snapshot of the selected task's most r
 - **THEN** the panel shows "Preview unavailable" rather than crashing
 
 ### Requirement: Empty-state banner
+
+The following full-page empty-state and three-panel layout behavior SHALL apply in the default layout (`ui.tasks_rail` false). With the rail enabled, an empty rail SHALL remain visible beside a create/select hint, and the `n` action SHALL remain available.
 
 When there are no tasks at all, the task page SHALL display a centered banner with the hint "Press [n] to create your first task" instead of the three-panel layout. When tasks exist, the three-panel layout SHALL be shown and the hint SHALL not appear.
 
