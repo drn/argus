@@ -24,9 +24,10 @@ func FillArea(screen tcell.Screen, x, y, w, h int, r rune, style tcell.Style) {
 	if w <= 0 || h <= 0 {
 		return
 	}
+	text := string(r)
 	for row := y; row < y+h; row++ {
 		for col := x; col < x+w; col++ {
-			screen.SetContent(col, row, r, nil, style)
+			screen.Put(col, row, text, style)
 		}
 	}
 }

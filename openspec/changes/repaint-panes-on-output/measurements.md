@@ -144,6 +144,20 @@ Top cumulative CPU is Application.draw 0.91s, refreshTasksWithIDs 0.64s, Termina
 - **CPU attribution:** flat `spanInlineMarkBits.init` **1.92s** (49.87%), `memclrNoHeapPointers` **0.56s**, `rawsyscalln` **0.45s**. Cumulative `Application.draw` **2.68s**, `mallocgc` **2.66s**, `HeraPage.Draw` **1.36s**, `baseScreen.SetContent` **1.32s**, `slicerunetostring` **1.23s**, `Show` **0.93s** and `TerminalPane.Draw` **0.88s**. These cumulative paths overlap. `WindowSize`/`IoctlGetWinsize` matches **no CPU samples**: the prior size-query hotspot is removed, while allocation work dominates this run.
 - **Evidence:** `/tmp/argus-paint-sizecache.pZpzAk/pprof.argus-repaint-8ms-cache.samples.cpu.002.pb.gz`, `controlled-cache-rerun-busy.txt`, `controlled-cache-rerun-busy-cum.txt`, `controlled-cache-rerun-busy-start.txt`, `controlled-cache-rerun-busy-load.txt` and `cache-rerun-repaint-windows.txt`. Producer and profiler stopped; further tuning, push and PR await coordinator direction.
 
+### Allocation follow-up benchmarks
+
+The valid cache profile's `-peek` attribution places 1.22s under `SetContent`'s rune-slice-to-string conversion. Callers account for tview Box background fill 0.67s, our FillArea 0.29s, terminal cache replay 0.21s and fresh terminal paint 0.08s; smaller border/text/rail callers account for 0.07s. The local follow-up targets FillArea and terminal painting through `Put` with reused immutable strings. Pinned tview v0.42.0 exposes no public setter for its private `dontClear` flag, so Box fill suppression was explicitly skipped; normal Clear/Draw/Show and blank fills remain intact.
+
+Fixed-viewport benchmarks use 88×48 cells, Go 1.26.8 on Apple M5 Max, three non-race runs per case. The fresh terminal fixture contains ASCII, accented text, CJK and ANSI styling; replay reuses the populated cache. Setup and emulator writes are outside the timed loop. These measure cell-paint work without terminal Show, not end-to-end CPU or echo latency.
+
+| Benchmark | Before allocs/op | After allocs/op | Before B/op | After B/op | Before ns/op | After ns/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FillArea | 4,224 | 1 | 16,896–16,898 | 4 | 180,058–187,724 | 120,774–125,104 |
+| Fresh terminal paint | 4,224 | 0 | 17,152–17,155 | 0 | 361,698–361,792 | 283,619–294,550 |
+| Terminal cache replay | 4,224 | 0 | 17,152 | 0 | 203,696–206,481 | 138,718–145,074 |
+
+Reproduce with `go test ./internal/tui/widget ./internal/tui/terminal -run '^$' -bench 'BenchmarkFillArea|BenchmarkTerminalCellPainting' -benchmem -count=3`. Raw files: `/tmp/argus-paint-sizecache.pZpzAk/cell-alloc-before.txt` and `cell-alloc-after.txt`. Allocation tests fail against the previous implementation and pass after the change. SimulationScreen tests compare legacy SetContent output against the new fills and terminal glyphs/widths/styles, and restore the same frame from cache after clearing and changing the emulator. A fixture-only emulator drain/Close race was removed by using an emulator with no response reader; production emulator lifecycle is unchanged. A new live busy profile is still required before claiming the CPU guard passes.
+
 ### Operator steps
 
 The coordinator approved completing the remaining Before and After typing and busy CPU captures back-to-back. Keep the same terminal size and daemon/supervisor deployment, and choose **Skip/Esc** in both skew modals. Close only the TUI between runs.

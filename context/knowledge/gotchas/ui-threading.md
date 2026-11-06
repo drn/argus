@@ -1,5 +1,7 @@
 ## UI Threading
 
+- **Use `Put` with reusable strings for repeated cell fills and terminal-cache replay.** tcell v2.13.8's `SetContent` converts a rune slice to a newly allocated string on every call; pinned tview v0.42.0 has no public setter for its private `dontClear` flag, so its Box fill cannot be disabled through a supported API.
+
 - **Keep the terminfo TTY size cache below the screen layer: Clear/Draw/Show still run normally.** tcell v2.13.8 issues a terminal-size ioctl on every Show; resolve terminfo before opening the TTY, since its stock Close cannot release a device that has not been started.
 
 - **Quit through `stopTUI`, which stops output wakes and lets the single queued repaint return before stopping tview.** `QueueUpdateDraw` is synchronous and cannot be cancelled after enqueue; stopping the event loop first would strand the pump.

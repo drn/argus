@@ -44,6 +44,14 @@ Baseline verification: `make pre-pr` was run in full; Go 1.26.8's 11 standard-li
 
 Cache review: `hera-review` and `hera-review-test-adversary` identified and resolved test gaps in production factory integration and actual paste-handler delivery; the SimulationScreen setup test also observes mouse/paste enablement after Init, because injected paste events alone cannot detect broken initialization order. Real tcell Show tests exercise the production factory, exact TTL expiry, and notified/missed resizes. Final 1-second focused race tests pass. Full `make pre-pr` passes build/vet/format/lint (0 issues), then stops at the same 11 standard-library vulnerabilities covered by the coordinator's advisory exception; its exit status is preserved. The separate full race/coverage gate passes at 89.0% (40,622/45,658 statements; 13 excluded files). All 78 strict OpenSpec validations pass. ProtocolVersion remains 11, and `TestSupervisorSurfaceDigest` passes without changing its expected digest. The controlled remeasurement remains pending.
 
+## 4b. Reduce per-frame text allocations
+
+- [x] 4b.1 Add fixed-viewport benchmarks for rectangle filling, fresh terminal painting and cache replay; record baseline allocs/op and add allocation/output equivalence tests.
+- [x] 4b.2 Reuse fill and cell strings through Put, retaining glyph/style/blank-fill semantics and existing cache invalidation; document the allocation gotcha.
+- [ ] 4b.3 Run both review lenses and local gates, commit locally, build a fresh scratch binary and report its path/checksum for the same controlled BUSY protocol. No rate fallback, push or PR without coordinator direction.
+
+Allocation verification: `hera-review` and `hera-review-test-adversary` completed with no remaining findings after fixing the fixture-only drain/Close race and checking cleanup errors. Allocation guards failed against the old implementation and pass with Put; output equivalence covers Unicode first-rune behavior, styles, widths, clipping, blank rows and immutable cache replay after emulator mutation. Full `make pre-pr` passes build/vet/format/lint (0 issues), then stops at the known 11 standard-library CVEs under the coordinator's advisory exception, preserving exit status. Separate full race/coverage passes at 89.0% (40,633/45,663 statements, 13 excluded files); all 78 strict OpenSpec validations and the unchanged supervisor surface digest pass. tview's private dontClear flag has no public setter, so no Box background suppression was attempted. Controlled BUSY remeasurement remains pending.
+
 ## 5. Documentation and ship
 
 - [x] 5.1 Update `gotchas/ui-threading.md` (fix-redraw-loop-leak bullet) and `gotchas/pty-terminal.md` (the 200ms loop and 16ms follow-up bullets) to describe the pump, keeping the history. Add new gotchas for the writer-based signal and why `session.go` must stay untouched, and update `context/knowledge/index.md`.

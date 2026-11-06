@@ -73,6 +73,20 @@ The TUI's terminfo TTY SHALL cache successful terminal size queries for at most 
 - **WHEN** the underlying size query returns an error
 - **THEN** that result is returned unchanged and the next query reaches the underlying TTY again
 
+### Requirement: Repeated cell painting reuses text strings
+
+Rectangle fills SHALL convert their fill rune to text once per rectangle. Terminal pane painting SHALL reuse the first-rune text of emulator cells, and paint-cache replay SHALL reuse that stored text. These paths SHALL avoid per-cell rune-slice-to-string conversions while preserving existing glyphs, styles, clipping, blank fills and cache invalidation. The normal full-screen Clear/Draw/Show path SHALL remain intact.
+
+#### Scenario: Replaying cached cells preserves the painted frame
+
+- **WHEN** terminal cells with ASCII, Unicode, styled content and blank rows are painted, the screen is cleared, and the cache is replayed
+- **THEN** replay restores the same glyphs, widths and styles without per-cell text conversion
+
+#### Scenario: Filling a rectangle retains existing output
+
+- **WHEN** a rectangle is filled with a rune and style
+- **THEN** its glyphs, styles and clipping match the existing per-cell SetContent behavior while sharing one converted string
+
 ### Requirement: Keystroke-to-paint latency is logged
 
 The timing log SHALL be off by default and SHALL be enabled only for a TUI launched with `ARGUS_TYPING_LOG=1`. When it is off, the TUI SHALL NOT take latency timestamps or write latency log lines. When it is on, the TUI SHALL write one `uxlog` line prefixed `[typing]` for each key forwarded to an agent from the Tasks agent view or a Hera pane, reporting the total time from the key press to the frame containing its echo being flushed, and the parts of that time: waiting to be handled, waiting for output, waiting for paint, and time spent inside a tick closure. The first output after the key SHALL be treated as its echo. The line SHALL also report the time since the session's last prior output and whether another key was still awaiting its echo. The line SHALL NOT contain key content or length.
