@@ -1288,3 +1288,34 @@ func TestSandboxPathWarning_CaseInsensitiveAndRoots(t *testing.T) {
 		testutil.Equal(t, SandboxPathWarning(p) != "", true)
 	}
 }
+
+func TestSandboxProfile_AWSMetadataAllowFollowsDeny(t *testing.T) {
+	deny := `(deny file-read* (subpath (string-append (param "HOME") "/.aws")))`
+	allow := `(allow file-read-metadata (subpath (string-append (param "HOME") "/.aws")))`
+	di := strings.Index(sandboxProfileBase, deny)
+	ai := strings.Index(sandboxProfileBase, allow)
+	if di < 0 || ai < 0 {
+		t.Fatalf("profile missing .aws deny (%d) or metadata allow (%d)", di, ai)
+	}
+	if ai < di {
+		t.Errorf("metadata allow must come after the deny (later rules win in SBPL)")
+	}
+}
+
+func TestSandbox_AWSStatAllowedReadBlocked(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+	resolved, profilePath, params, cleanup := sandboxFakeHome(t, "aws", ".aws")
+	defer cleanup()
+	cred := filepath.Join(resolved, ".aws", "credentials")
+	if err := os.WriteFile(cred, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := sandboxRunWith(profilePath, params, "stat "+shellQuote(cred)); err != nil {
+		t.Errorf("stat on ~/.aws/credentials should be allowed: %v\n%s", err, out)
+	}
+	if out, err := sandboxRunWith(profilePath, params, "cat "+shellQuote(cred)); err == nil {
+		t.Errorf("reading ~/.aws/credentials contents should be blocked:\n%s", out)
+	}
+}
