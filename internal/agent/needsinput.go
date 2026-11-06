@@ -387,13 +387,19 @@ var risReset = []byte("\x1bc")
 type ScreenRenderer struct {
 	emu        *xvt.SafeEmulator
 	cols, rows int
+	renders    uint64
 }
+
+// RenderCount reports actual emulator renders for scan cost diagnostics.
+// Like render, it must only be called by the renderer's owning goroutine.
+func (r *ScreenRenderer) RenderCount() uint64 { return r.renders }
 
 // render writes tail through the emulator sized to cols×rows and returns the
 // visible screen as plain text. Non-positive dimensions fall back to the
 // session default (80×24) — wrong cols changes wrapping, so callers should pass
 // the session's real PTY size (agent.LoadSessionSize) when known.
 func (r *ScreenRenderer) render(tail []byte, cols, rows int) string {
+	r.renders++
 	if cols <= 0 {
 		cols = int(DefaultTermCols)
 	}
@@ -764,16 +770,7 @@ type ClearedMarker struct {
 // renderer falls back to the raw-tail fingerprint (linear agents only); the
 // working-affordance check then runs over the ANSI-stripped raw tail.
 func ContentIdleFingerprint(r *ScreenRenderer, buf []byte, cols, rows int) (fp uint64, working bool) {
-	if r == nil || len(buf) == 0 {
-		tail := buf
-		if len(tail) > needsInputTailWindow {
-			tail = tail[len(tail)-needsInputTailWindow:]
-		}
-		stripped := sanitize.StripANSI(string(tail))
-		return ContentFingerprint(buf), needsInputWorkingRe.MatchString(stripped)
-	}
-	screen := r.render(buf, cols, rows)
-	return fingerprintText(screen), needsInputWorkingRe.MatchString(screen)
+	return NewTailView(r, buf, cols, rows).ContentIdleFingerprint()
 }
 
 // NeedsInputEscalationTicks bounds the worst-case delay before a genuinely
@@ -813,25 +810,7 @@ const NeedsInputEscalationTicks = 8
 // misses the selection shape entirely (a candidate alt-screen, cursor-
 // addressed prompt) does it fall back to the reconstructed screen.
 func ParkedSelectionSignal(r *ScreenRenderer, buf []byte, cols, rows int) bool {
-	if len(buf) == 0 {
-		return false
-	}
-	tail := buf
-	if len(tail) > needsInputTailWindow {
-		tail = tail[len(tail)-needsInputTailWindow:]
-	}
-	stripped := sanitize.StripANSI(string(tail))
-	if detectSelectionPromptText(stripped) {
-		return !needsInputWorkingRe.MatchString(stripped)
-	}
-	if r == nil {
-		return false
-	}
-	screen := r.render(buf, cols, rows)
-	if !detectSelectionPromptText(screen) {
-		return false
-	}
-	return !needsInputWorkingRe.MatchString(screen)
+	return NewTailView(r, buf, cols, rows).ParkedSelectionSignal()
 }
 
 // EscalateParkedSelection advances the BUG-029 consecutive-tick escalation
@@ -1304,8 +1283,9 @@ func contentIdleSignalFor(id string, tailOf func(string) []byte, sizeOf func(str
 		return 0, false, false, false
 	}
 	cols, rows := sizeOf(id)
-	fp, working = ContentIdleFingerprint(screen, tail, cols, rows)
-	parked = ParkedSelectionSignal(screen, tail, cols, rows)
+	view := NewTailView(screen, tail, cols, rows)
+	fp, working = view.ContentIdleFingerprint()
+	parked = view.ParkedSelectionSignal()
 	return fp, working, parked, true
 }
 
@@ -1449,13 +1429,7 @@ func SubstantiveTail(readN func(n int) []byte, wantBytes, maxBytes int) []byte {
 // the same three signals against the rendered text. A nil renderer disables the
 // fallback, making it identical to DetectNeedsInput.
 func DetectNeedsInputScreen(r *ScreenRenderer, buf []byte, cols, rows int) bool {
-	if DetectNeedsInput(buf) {
-		return true
-	}
-	if r == nil || len(buf) == 0 {
-		return false
-	}
-	return detectNeedsInputText(r.render(buf, cols, rows))
+	return NewTailView(r, buf, cols, rows).DetectNeedsInputScreen()
 }
 
 // AwaitingInputFingerprint powers the never-idle content-stability pass
@@ -1477,21 +1451,5 @@ func DetectNeedsInputScreen(r *ScreenRenderer, buf []byte, cols, rows int) bool 
 //
 // ok=false ⇒ no awaiting-input signal; fp is meaningless and must not be stored.
 func AwaitingInputFingerprint(r *ScreenRenderer, buf []byte, cols, rows int) (fp uint64, ok bool) {
-	if len(buf) > 0 {
-		tail := buf
-		if len(tail) > needsInputTailWindow {
-			tail = tail[len(tail)-needsInputTailWindow:]
-		}
-		if awaitingInputText(sanitize.StripANSI(string(tail))) {
-			return ContentFingerprint(buf), true
-		}
-	}
-	if r == nil || len(buf) == 0 {
-		return 0, false
-	}
-	screen := r.render(buf, cols, rows)
-	if !awaitingInputText(screen) {
-		return 0, false
-	}
-	return fingerprintText(screen), true
+	return NewTailView(r, buf, cols, rows).AwaitingInputFingerprint()
 }

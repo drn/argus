@@ -656,6 +656,9 @@ type App struct {
 	// nowFn is the clock used by the failsafe window check. Defaults to
 	// time.Now; tests override it to make the timing deterministic.
 	nowFn func() time.Time
+	// needsInputTailReader is a scan-local read-count test seam; nil uses disk.
+	needsInputTailReader   func(string) []byte
+	needsInputScanLoggedAt time.Time
 	// resumeResizeDelay is how long after a successful plugin-view reconnect to
 	// re-send the resize envelope. A plugin daemon that restarts warm can render
 	// its first frame within tens of ms of the new WebSocket connecting — before
@@ -2801,11 +2804,9 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	if a.needsInputScreen == nil {
 		a.needsInputScreen = &agent.ScreenRenderer{}
 	}
-	fresh := a.detectNeedsInput(idleIDs)
-	freshSet := make(map[string]bool, len(fresh))
-	for _, id := range fresh {
-		freshSet[id] = true
-	}
+	rendersBefore := a.needsInputScreen.RenderCount()
+	var fresh []string
+	freshSet := make(map[string]bool, len(idleIDs))
 	flag := func(id string) {
 		if !freshSet[id] {
 			fresh = append(fresh, id)
@@ -2851,8 +2852,8 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// all read the SAME session log tail via readSessionLogTailBytes(id,
 	// detectNeedsInputTailBytes) and re-run the SAME agent.ScreenRenderer VT
 	// emulation over it — up to four redundant disk reads + re-emulations per
-	// session per tick. getTail (Fix 1) memoizes that read to at most once per
-	// id THIS tick, and the resumed-activity / sustained-active passes share
+	// session per tick. getView memoizes that read and its lazy TailView to
+	// at most once per id THIS tick; the resumed/sustained-active passes share
 	// ONE agent.ContentIdleFingerprint call via workingOf below instead of
 	// each calling it independently.
 	//
@@ -2873,15 +2874,8 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// (replayed) signal as input: several BUG-* fixes in this file depend on
 	// the counters advancing exactly once per ~1s tick regardless of whether
 	// the expensive read was skipped.
-	tailCache := make(map[string][]byte, len(activeRunningIDs))
-	getTail := func(id string) []byte {
-		if t, ok := tailCache[id]; ok {
-			return t
-		}
-		t := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-		tailCache[id] = t
-		return t
-	}
+	views := make(map[string]*agent.TailView, len(activeRunningIDs))
+	hasTailOf := make(map[string]bool, len(activeRunningIDs))
 	prevLogStat := a.needsInputLogStat
 	newLogStat := make(map[string]needsInputLogStat, len(activeRunningIDs))
 	unchangedCache := make(map[string]bool, len(activeRunningIDs))
@@ -2903,6 +2897,24 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		unchangedCache[id] = u
 		return u
 	}
+	getView := func(id string) *agent.TailView {
+		if v, ok := views[id]; ok {
+			return v
+		}
+		// Snapshot BEFORE reading, including on first observation. A writer
+		// racing this read then leaves a dirty baseline for the following tick.
+		logUnchanged(id)
+		read := a.needsInputTailReader
+		if read == nil {
+			read = func(id string) []byte { return readSessionLogTailBytes(id, detectNeedsInputTailBytes) }
+		}
+		tail := read(id)
+		hasTailOf[id] = len(tail) != 0
+		cols, rows := needsInputScreenSize(id)
+		v := agent.NewTailView(a.needsInputScreen, tail, cols, rows)
+		views[id] = v
+		return v
+	}
 	prevRaw := a.needsInputRawSignals
 	newRaw := make(map[string]needsInputRawSignals, len(activeRunningIDs))
 
@@ -2918,7 +2930,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// next tick's comparison see "unchanged since last observation" against a
 	// snapshot that was never matched with a real read — permanently masking
 	// a genuine change that happened while the id was out of rotation. Leaving
-	// no newLogStat entry on a skipped tick instead makes the id's next DUE
+	// the LAST ACTUALLY READ stat on a skipped tick makes the id's next DUE
 	// tick compare fresh-vs-last-actually-read, exactly as intended: still
 	// skips the read if truly nothing changed across the whole gap, but
 	// always catches a real change once the id's batch comes due.
@@ -2928,13 +2940,40 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// by rotation.
 	due := a.needsInputScanBatch(activeRunningIDs)
 	reuseCached := func(id string) bool {
+		// A newly idle session can force a fresh read outside its due batch.
+		// Every subsequent pass must then use that view, not older signals.
+		if _, read := views[id]; read {
+			return false
+		}
 		if _, seen := prevRaw[id]; !seen {
 			return false
 		}
 		if !due(id) {
+			if stat, ok := prevLogStat[id]; ok {
+				newLogStat[id] = stat
+			}
 			return true
 		}
 		return logUnchanged(id)
+	}
+
+	// Keep idle candidates first. First-idle ticks have no valid awaiting
+	// reading to replay, even if the running detectors had an unchanged tail.
+	for _, id := range idleIDs {
+		if archivedOf(id) {
+			continue
+		}
+		pr := prevRaw[id]
+		awaiting := pr.awaitingNow
+		if !reuseCached(id) || !pr.awaitingComputed {
+			awaiting = getView(id).DetectNeedsInputScreen()
+		}
+		if runningSet[id] {
+			newRaw[id] = needsInputRawSignals{awaitingComputed: true, awaitingNow: awaiting}
+		}
+		if awaiting {
+			flag(id)
+		}
 	}
 
 	// Content-stability pass: fingerprint only sessions showing an
@@ -2957,12 +2996,11 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 				parked = pr.parked
 			}
 		} else {
-			tail := getTail(id)
-			hasTail = len(tail) != 0
+			view := getView(id)
+			hasTail = hasTailOf[id]
 			if hasTail {
-				cols, rows := needsInputScreenSize(id)
-				fp, ok = agent.AwaitingInputFingerprint(a.needsInputScreen, tail, cols, rows)
-				parked = agent.ParkedSelectionSignal(a.needsInputScreen, tail, cols, rows)
+				fp, ok = view.AwaitingInputFingerprint()
+				parked = view.ParkedSelectionSignal()
 			}
 		}
 		nr := newRaw[id]
@@ -3041,11 +3079,10 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 			working = pr.working
 			contentFP = pr.contentFP
 		} else {
-			tail := getTail(id)
-			hasTail = len(tail) != 0
+			view := getView(id)
+			hasTail = hasTailOf[id]
 			if hasTail {
-				cols, rows := needsInputScreenSize(id)
-				contentFP, working = agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+				contentFP, working = view.ContentIdleFingerprint()
 			}
 		}
 		nr := newRaw[id]
@@ -3135,14 +3172,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		idleNow := idleSet[id]
 		var awaitingNow bool
 		if idleNow {
-			pr := prevRaw[id]
-			if reuseCached(id) && pr.awaitingComputed {
-				awaitingNow = pr.awaitingNow
-			} else {
-				tail := getTail(id)
-				cols, rows := needsInputScreenSize(id)
-				awaitingNow = agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows)
-			}
+			awaitingNow = newRaw[id].awaitingNow
 		}
 		nr := newRaw[id]
 		nr.awaitingComputed, nr.awaitingNow = idleNow, awaitingNow
@@ -3160,6 +3190,10 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 
 	a.needsInputLogStat = newLogStat
 	a.needsInputRawSignals = newRaw
+	if now := time.Now(); now.Sub(a.needsInputScanLoggedAt) >= 30*time.Second {
+		uxlog.Log("[needsinput] scan running=%d active=%d idle=%d reads=%d renders=%d archived_skipped=%d", len(runningIDs), len(activeRunningIDs), len(idleIDs), len(views), a.needsInputScreen.RenderCount()-rendersBefore, len(runningIDs)-len(activeRunningIDs))
+		a.needsInputScanLoggedAt = now
+	}
 
 	// BUG-067: merge this tick's and the PREVIOUS tick's content fingerprints
 	// (current wins) into a single lookup for NeedsInputClear's stale-marker
@@ -3291,10 +3325,14 @@ func (a *App) autoClearBlockedHeraRoles(runningIDs []string) {
 		}
 		working, computed := workingOf[b.TaskID]
 		if !computed {
-			tail := readSessionLogTailBytes(b.TaskID, detectNeedsInputTailBytes)
-			if len(tail) > 0 {
-				cols, rows := needsInputScreenSize(b.TaskID)
-				_, working = agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+			if sig, ok := a.contentIdleSignalOf(b.TaskID); ok {
+				working = sig.Working
+			} else {
+				tail := readSessionLogTailBytes(b.TaskID, detectNeedsInputTailBytes)
+				if len(tail) > 0 {
+					cols, rows := needsInputScreenSize(b.TaskID)
+					_, working = agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+				}
 			}
 			workingOf[b.TaskID] = working
 		}
