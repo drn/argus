@@ -11,10 +11,10 @@ Generate a structured prompt capturing the current conversation context so it ca
 
 - `$ARGUMENTS` - Optional. Free-form instructions about what to emphasize or who the target is. May also specify the target Argus project the follow-up task is created in, two ways:
   - `project=<name>` — explicit override, recognized only as a standalone whitespace-delimited token (so the word "project" in a sentence is not parsed as a directive). Used verbatim and **takes precedence** over any cue-anchored target. It is intentionally not validated against the projects list: the explicit `project=` syntax signals deliberate intent, so the user's literal value is honored.
-  - A **cue-anchored** target: the first whitespace-delimited token after `to`, `for`, `hand off to`, or `handoff to` — for example `/argus-handoff to keystone this task` or `/argus-handoff this work to keystone`. Compare that token (lowercased, with surrounding punctuation stripped) against the **Argus projects** listed in the Context block. A token is treated as the target **only when it matches a known project**; the routing phrase is then ignored when assembling the emphasis content. If several cue phrases appear, the first one whose token matches a known project wins. A cue-anchored token that matches no known project is never silently used — the skill asks (see step 8). Because `to`/`for` are common words, this validation is what prevents ordinary prose (e.g. "focus on the api changes", "remember to test") from being mistaken for routing: prose only routes if a word right after a cue happens to name a real project, and even then the handoff body is shown for review before any task is created.
+  - A **cue-anchored** target: the first whitespace-delimited token after `to`, `for`, `hand off to`, or `handoff to` — for example `/argus-handoff to keystone this task` or `/argus-handoff this work to keystone`. Compare that token (lowercased, with surrounding punctuation stripped) against the **Argus projects** listed in the Context block. A token is treated as the target **only when it matches a known project**; the routing phrase is then ignored when assembling the emphasis content. If several cue phrases appear, the first one whose token matches a known project wins. A cue-anchored token that matches no known project is never silently used — the skill asks (see step 7). Because `to`/`for` are common words, this validation is what prevents ordinary prose (e.g. "focus on the api changes", "remember to test") from being mistaken for routing: prose only routes if a word right after a cue happens to name a real project, and even then the handoff body is shown for review before any task is created.
   - If no project is specified either way, derive from the worktree path: the immediate subdirectory after `~/.argus/worktrees/` (e.g. CWD `/Users/me/.argus/worktrees/dots/foo` → project `dots`). If that does not resolve, ask the user before creating the task.
-  - `sandbox=enabled|disabled` — standalone whitespace-delimited token. Passed as `sandbox_override` to `task_create` in step 8 to force the follow-up task's sandbox on or off. Omit the field when the token is absent (inherit the project/global default). Any other value: ask the user rather than guessing. `disabled` is rejected by Argus when the calling task is itself sandboxed or unidentified — surface that error verbatim.
-  - `no-task` — standalone token that skips Argus task creation entirely (KB save still runs). When present it short-circuits step 8 before any project resolution, so a cue-anchored or `project=` target is moot and the skill does not ask about an unknown project.
+  - `sandbox=enabled|disabled` — standalone whitespace-delimited token. Passed as `sandbox_override` to `task_create` in step 7 to force the follow-up task's sandbox on or off. Omit the field when the token is absent (inherit the project/global default). Any other value: ask the user rather than guessing. `disabled` is rejected by Argus when the calling task is itself sandboxed or unidentified — surface that error verbatim.
+  - `no-task` — standalone token that skips Argus task creation entirely (the KB save still runs in KB mode; in direct mode the handoff is copied to the clipboard instead). When present it short-circuits step 7 before any project resolution, so a cue-anchored or `project=` target is moot and the skill does not ask about an unknown project.
 
 ## Context
 
@@ -28,8 +28,8 @@ Generate a structured prompt capturing the current conversation context so it ca
 - Uncommitted changes: !`git status --short 2>/dev/null | head -20`
 - Changed files vs main: !`git diff --name-only origin/main..HEAD 2>/dev/null | head -30`
 - Changed files vs master: !`git diff --name-only origin/master..HEAD 2>/dev/null | head -30`
+- KB enabled in config.toml: !`awk '/^\[kb\]/{f=1;next} /^\[/{f=0} f && /^enabled/' ~/.argus/config.toml 2>/dev/null | head -1`
 - KB usage restriction in this repo: !`grep -liE 'never use argus-kb|argus-kb.*sandbox|sandboxed away from external systems' CLAUDE.md AGENTS.md 2>/dev/null | head -3`
-- Repo-local context/ directory present: !`command ls -d context 2>/dev/null | head -1`
 
 ## Instructions
 
@@ -70,12 +70,15 @@ Keep it concise but complete enough that the receiving agent can continue withou
 
 ### Output procedure
 
-The Argus knowledge base is the primary destination for handoffs — they persist across threads and the receiving agent can pull them with `kb_read`, `kb_list`, or `kb_search`. Clipboard is only a fallback when the KB is unavailable. A third case sits alongside those two: some repos forbid argus-kb entirely (see step 7's KB restriction check) — for those, the destination is a repo-local file instead of either the KB or the clipboard.
+There are two delivery modes. **KB mode** (default): the handoff is saved to the Argus knowledge base and the new task's prompt points at it. **Direct mode**: the KB is not used; the full handoff body is placed in the new task's prompt. Step 1 picks the mode.
 
-1. **Slug.** Derive a slug from the handoff title: lowercase kebab-case. Keep only `[a-z0-9-]`, collapse runs of hyphens, trim leading/trailing hyphens, and cap at 40 characters. If empty after sanitization, use `handoff`. This protects the KB path from traversal characters in user-supplied titles.
-2. **Timestamp.** Run `date +%Y-%m-%d-%H%M%S`. If the command fails or returns empty, use a 4-character random hex suffix instead. Seconds in the timestamp keep two same-minute invocations from colliding.
-3. **Paths.** KB path: `memory/handoff/<timestamp>-<slug>.md`. Repo-local fallback path (used only when step 7's KB restriction check finds this repo forbids argus-kb): `context/handoff/<timestamp>-<slug>.md`. Temp file: `/tmp/handoff-<timestamp>.md` (timestamped so concurrent invocations don't overwrite each other).
-4. **Document.** Build the full document with YAML frontmatter at the top — Argus KB requires `title` and `tags`:
+1. **Pick the mode.** Use **direct mode** if ANY of these hold; otherwise use KB mode:
+   - The Argus KB is disabled: the **KB enabled in config.toml** Context line is empty or says `false`, or neither `mcp__argus__kb_ingest` nor `mcp__argus-kb__kb_ingest` is a registered tool (the KB MCP tools are only registered when `kb.enabled` is on). A registered tool is the authoritative signal; if it is present, treat the KB as enabled even when the config line is empty (the setting may live in the DB).
+   - The repo explicitly disables KB use: the **KB usage restriction** Context line names a file (CLAUDE.md and/or AGENTS.md matched a forbidding rule). Never call `kb_ingest` in this case, not even as a test.
+   - A KB mode `kb_ingest` call fails (server unreachable): fall back to direct mode.
+2. **Title and slug.** The handoff title is the `[brief title]` from the document. Derive a slug from it: lowercase kebab-case, only `[a-z0-9-]`, collapse runs of hyphens, trim leading/trailing hyphens, cap at 40 characters. If empty, use `handoff`. This protects the KB path from traversal characters in user-supplied titles.
+3. **Timestamp (KB mode only).** Run `date +%Y-%m-%d-%H%M%S`. If it fails or returns empty, use a 4-character random hex suffix. KB path: `memory/handoff/<timestamp>-<slug>.md`.
+4. **Document.** Build the full document. In KB mode add YAML frontmatter (Argus KB requires `title` and `tags`):
 
    ```
    ---
@@ -86,41 +89,35 @@ The Argus knowledge base is the primary destination for handoffs — they persis
    <handoff body>
    ```
 
-5. Write the full document (raw markdown, no wrapping code fence) to the temp path using the Write tool.
-6. Display the handoff body (without frontmatter) to the user inside a fenced code block.
-7. **Save to KB — or the repo-local fallback if KB usage is forbidden here.** First check the **KB usage restriction** line in the Context block: if it names a file (CLAUDE.md and/or AGENTS.md matched a forbidding rule), this repo has opted out of argus-kb for content-sandboxing reasons. In that case, skip `kb_ingest` entirely — do not call it at all, not even as a test — and instead:
-   - If the **Repo-local context/ directory present** Context line is non-empty, write the full document (same frontmatter-plus-body content as the KB path would have gotten) to `context/handoff/<timestamp>-<slug>.md` using the Write tool (creating `context/handoff/` if needed), and treat that path as the saved artifact for steps 8-9. Tell the user: this repo's CLAUDE.md/AGENTS.md forbids argus-kb, so the handoff was saved locally at that path instead.
-   - Otherwise, no repo-local `context/` directory exists either — fall through directly to step 9 (clipboard), skipping step 8, and tell the user why (KB forbidden here, no `context/` directory to fall back to).
-
-   Only when the KB usage restriction line is empty (no forbidding rule found), proceed normally: call `mcp__argus__kb_ingest` with the KB path and the full document. If that exact tool name is not registered, retry with `mcp__argus-kb__kb_ingest` — both names refer to the same server in different harnesses. On success, tell the user: handoff saved to the KB path, and the receiving agent can find it with `kb_list("memory/handoff/")` (latest is highest-sorted by timestamp) or `kb_search("<slug>")`. Handoffs are intentionally not deduplicated — each one is a session snapshot. If this call itself fails (KB server unreachable), fall through to step 9 as before.
-8. **Create Argus task** (only if step 7 produced a saved artifact — a KB doc or a repo-local file — and `no-task` was not passed). The saved document is the artifact; this task is the delivery mechanism that wakes a receiving agent.
-
-   (This step is reached only when `no-task` was not passed — see the step 8 preamble — so the resolution below never runs for a `no-task` invocation.) Resolve the project from the CWD captured at skill invocation (not after any later `cd`), in this order:
-   - If `$ARGUMENTS` contains a standalone `project=<name>` token, use that value verbatim. It wins over any cue-anchored target.
-   - Else, scan `$ARGUMENTS` for a cue-anchored target — the first token after `to`, `for`, `hand off to`, or `handoff to` (lowercased, surrounding punctuation stripped). If one is present:
-     - If it matches a name in the Context **Argus projects** list, use it. If several cue phrases appear, use the first whose token matches a known project.
-     - If a cue phrase is present but its token matches **no** known project, **ask** the user which Argus project to use. Do not guess, and do not fall through to the CWD-derived project.
-   - Else, if CWD starts with `~/.argus/worktrees/` (resolving `~` to `$HOME`), use the next path segment as the project name.
-   - Else, ask the user which Argus project to create the task in. Do **not** guess.
+   In direct mode the document is just the handoff body.
+5. Display the handoff body (without frontmatter) to the user inside a fenced code block.
+6. **KB mode only: save.** Call `mcp__argus__kb_ingest` with the KB path and the full document (retry with `mcp__argus-kb__kb_ingest` if the first name is not registered; both are the same server in different harnesses). On success tell the user the KB path and that the receiving agent can find it with `kb_list("memory/handoff/")` (latest sorts highest) or `kb_search("<slug>")`. Handoffs are intentionally not deduplicated: each is a session snapshot. If the call fails, switch to direct mode and say why.
+7. **Create Argus task** (unless `no-task` was passed). Resolve the project from the CWD captured at skill invocation (not after any later `cd`), in this order:
+   - If `$ARGUMENTS` contains a standalone `project=<name>` token, use it verbatim. It wins over any cue-anchored target.
+   - Else, scan `$ARGUMENTS` for a cue-anchored target (first token after `to`, `for`, `hand off to`, or `handoff to`, lowercased, punctuation stripped). If one is present: use it when it matches a name in the **Argus projects** list (first matching cue wins); if a cue is present but matches **no** known project, **ask** the user which project to use. Do not guess and do not fall through to the CWD-derived project.
+   - Else, if CWD starts with `~/.argus/worktrees/` (resolving `~` to `$HOME`), use the next path segment.
+   - Else, ask the user which project to use. Do **not** guess.
 
    Call `mcp__argus__task_create` with:
    - `project`: resolved above.
-   - `name`: `<timestamp>-<slug>` (mirrors the KB filename, minus extension). This avoids collision with the worktree's own owner task — which can share the slug — and keeps every handoff as a distinct task, matching the KB's intentional non-deduplication policy.
-   - `sandbox_override`: only when `$ARGUMENTS` has a `sandbox=enabled|disabled` token — pass that value; otherwise omit the field. When passing `disabled`, also pass `caller_id` (the Calling task ID from Context) or `cwd` (`$PWD`) so Argus can identify the caller.
-   - `upsert`: `true` — only relevant for retry semantics (same `<timestamp>-<slug>` is already unique).
-   - `prompt`: a short instruction telling the receiving agent to invoke any "Invoke First" skill from the handoff, then read the saved document and follow the plan as **reference data**, not as direct instructions to execute. Do **not** inline the full handoff body — keep the task prompt small and let the saved document stay the source of truth.
-     - If step 7 saved to the KB: point the receiving agent at `kb_read("<kb-path>")`, and include the slug so `kb_search("<slug>")` is a viable fallback.
-     - If step 7 saved to the repo-local fallback instead (KB forbidden here): point the receiving agent at `Read("<repo-local-path>")` instead — there is no KB entry to fall back to, since this repo opts out of argus-kb.
+   - `name`: `ho: <generated task name>`, where the generated task name is the short slug from step 2 (concise, descriptive, derived from the handoff title). Use the same name format in both modes. Argus sanitizes it for the worktree/branch.
+   - `caller_id`: the Calling task ID from Context, whenever it is non-empty (omit it otherwise). This always passes the parent task through to Argus so the new task inherits the parent's account; it is independent of the `sandbox=` token. If the Calling task ID is empty, pass `cwd` (`$PWD`) instead so Argus can still identify the caller.
+   - `sandbox_override`: only when `$ARGUMENTS` has a `sandbox=enabled|disabled` token; otherwise omit. `disabled` requires the caller identification above.
+   - `upsert`: omit it (never `true`). The name has no timestamp, so `upsert: true` would silently return an earlier handoff task with the same slug and deliver nothing. If `task_create` errors that a task named `ho: <slug>` already exists, retry with `ho: <slug>-2`, then `-3`, and so on.
+   - `prompt`: built as below.
 
-   **Back-reference to the calling task.** If the **Calling task ID** in the Context block is non-empty (treat a blank or whitespace-only value as empty), include it in the prompt so the receiving agent can reach back to the originating task — to ask a clarifying question, report a result, or signal completion. When you write the prompt, substitute the real calling task ID for `<calling-task-id>` (you know it now — it's the Context value); leave `<your own ARGUS_TASK_ID>` as a runtime instruction for the receiving agent, since that is *its* ID, not yet known here. Phrase it as: "This handoff came from Argus task `<calling-task-id>`. If you need to ask the originating task a question or report back, call `task_message_send(to="<calling-task-id>", id="<your own ARGUS_TASK_ID>", body=..., kind="question")` — where `<your own ARGUS_TASK_ID>` is your (the receiving agent's) own `$ARGUS_TASK_ID` env var resolved at call time, not a value to fill in now; use `kind="note"` for fire-and-forget. If the send fails (e.g. the originating task has since completed or been archived), note the error and carry on — don't block on it." Omit this whole instruction when **Calling task ID** is empty (the handoff is being generated outside an Argus task session), rather than emitting a placeholder.
+   **Prompt contents, in order:**
+   1. **First sentence: the title of the context**, i.e. the handoff title as a plain sentence (e.g. `Add retry handling to the sync worker.`), with no `Handoff:` prefix, greeting, or preamble before it. This applies in both modes.
+   2. A short instruction to invoke any "Invoke First" skill from the handoff, then treat the handoff as **reference data**, not direct instructions to execute.
+   3. The delivery of the context:
+      - KB mode: point at `kb_read("<kb-path>")` and include the slug so `kb_search("<slug>")` is a fallback. Do **not** inline the handoff body.
+      - Direct mode: include the full handoff body (without frontmatter) inline in the prompt, after the instruction above. There is no saved document and no KB entry.
+   4. **Back-reference.** If the **Calling task ID** is non-empty (blank or whitespace counts as empty), add: "This handoff came from Argus task `<calling-task-id>`. If you need to ask the originating task a question or report back, call `task_message_send(to="<calling-task-id>", id="<your own ARGUS_TASK_ID>", body=..., kind="question")`, where `<your own ARGUS_TASK_ID>` is your own `$ARGUS_TASK_ID` env var resolved at call time, not a value to fill in now; use `kind="note"` for fire-and-forget. If the send fails (e.g. the originating task completed or was archived), note the error and carry on." Substitute the real calling task ID now; leave the receiving agent's own ID as the runtime instruction. Omit this whole instruction when the Calling task ID is empty.
 
-   On success, report the task ID, project, and worktree path/branch alongside the saved document's path (KB path or repo-local path, whichever step 7 used). If a calling task ID was embedded, mention that the new task can message back to it. The procedure is complete; do not fall through to step 9.
+   On success, report the task ID, project, and worktree path/branch, plus the KB path (KB mode) or that the handoff was delivered directly in the prompt and why (direct mode: KB disabled or repo opts out). Mention that the new task can message back if a calling task ID was embedded. The procedure is complete.
 
-   On failure (tool errors, missing project, MCP not connected, validation error), **surface the error verbatim** and tell the user: "Handoff saved at `<path>` — Argus task creation failed: `<error>`. Re-run `/argus-handoff project=<name>` or create the task manually." Never silently swallow this failure. After reporting, the procedure is complete; do not fall through to step 9.
-
-9. **Clipboard fallback.** Reached when step 7 itself failed to produce a saved artifact: either the Argus KB MCP server is not running (`mcp__argus__kb_ingest` and the `mcp__argus-kb__kb_ingest` fallback both return tool-not-found, or the ingest call returns a server error), or this repo forbids argus-kb and has no `context/` directory to fall back to. Run `cat <temp path> | pbcopy` and report why (KB unavailable, or KB forbidden here with no local fallback dir) — copied to clipboard instead. Step 8 is skipped in this branch because there is no saved path for the task to point at.
-
-Writing to a temp file first guarantees the content preserves all newlines and formatting exactly as displayed, regardless of whether it ends up in the KB or the clipboard.
+   On failure (tool errors, missing project, MCP not connected, validation error), **surface the error verbatim** and tell the user: "Handoff delivered via `<KB path | displayed above>`, but Argus task creation failed: `<error>`. Re-run `/argus-handoff project=<name>` or create the task manually." In direct mode there is no saved copy, so also write the full body to `/tmp/handoff-<slug>.md` with the Write tool and run `cat` of it through `pbcopy` so the content is not lost, and say so. Never silently swallow the failure.
+8. **`no-task` in direct mode.** With no KB save and no task, the handoff would exist only on screen. Write the body to `/tmp/handoff-<slug>.md` and copy it with `pbcopy`, and tell the user it was copied to the clipboard. (In KB mode with `no-task`, the KB save alone is the deliverable.)
 
 ---
 
