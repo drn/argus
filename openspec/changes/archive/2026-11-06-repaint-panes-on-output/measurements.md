@@ -77,7 +77,51 @@ All table values are milliseconds; `n` is the number of retained samples. Quiet 
 | tasks | quiet | stall_ms | 370 | 0.000 | 0.000 | 16.128 | 27.549 |
 | tasks | quiet | quiet_ms | 370 | 110.967 | 354.015 | 3847.254 | 945140.315 |
 
-### CPU view controls and rate candidates (in progress)
+### After typing capture (8ms repaint, before size-cache/allocation tuning)
+
+The frozen 8ms binary at `7890c4e0` ran from 12:18:15.972 until its clean shutdown at 12:37:59.574 on 2026-11-05, at 212×52. Timing metadata spans 12:18:17.807–12:37:15.622. The saved snapshot and retained live log were merged by maximum per-line multiplicity, preserving repeated records without double-counting overlapping snapshots. The same key-interval overlap rule excludes coordinator restarts at 12:18:45.939–12:18:46.914 and 12:21:12.303–12:21:13.246; **no timing sample overlaps either interruption**. No slow sample is removed merely for its latency.
+
+All **2,961 samples** are retained: Tasks **1,723**, coordinator **804**, worker **434**, each above 200, with **zero no-echo samples**. Worker output continued throughout its typing window, so there are **no quiet worker samples**; quiet metrics are unavailable rather than zero-latency measurements. These timings characterize the original output pump; later size-cache and allocation tuning retains its 8ms scheduling and has its own CPU evidence below. They are not presented as a new three-pane latency capture on the final binary.
+
+| Pane | Population | Metric | n | p50 | p90 | p99 | Max |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| hera-agent | all | total_ms | 434 | 4.516 | 9.008 | 159.014 | 406.692 |
+| hera-agent | all | queue_ms | 434 | 0.012 | 4.331 | 129.828 | 268.427 |
+| hera-agent | all | arrive_ms | 434 | 0.673 | 0.782 | 28.432 | 33.538 |
+| hera-agent | all | paint_ms | 434 | 3.761 | 4.191 | 6.283 | 144.610 |
+| hera-agent | all | stall_ms | 434 | 0.000 | 0.000 | 112.355 | 162.033 |
+| hera-agent | all | quiet_ms | 434 | 14.865 | 30.569 | 33.667 | 34.216 |
+| hera-agent | quiet | all metrics | 0 | N/A | N/A | N/A | N/A |
+| hera-coord | all | total_ms | 804 | 9.221 | 17.965 | 151.994 | 175.708 |
+| hera-coord | all | queue_ms | 804 | 0.013 | 4.640 | 139.780 | 165.665 |
+| hera-coord | all | arrive_ms | 804 | 2.560 | 2.989 | 11.039 | 53.791 |
+| hera-coord | all | paint_ms | 804 | 6.502 | 10.371 | 13.091 | 160.496 |
+| hera-coord | all | stall_ms | 804 | 0.000 | 0.000 | 135.236 | 159.359 |
+| hera-coord | all | quiet_ms | 804 | 90.331 | 218.141 | 1081.331 | 7594.627 |
+| hera-coord | quiet | total_ms | 635 | 9.172 | 15.744 | 146.262 | 175.708 |
+| hera-coord | quiet | queue_ms | 635 | 0.013 | 3.228 | 129.426 | 165.665 |
+| hera-coord | quiet | arrive_ms | 635 | 2.593 | 3.035 | 11.174 | 17.324 |
+| hera-coord | quiet | paint_ms | 635 | 6.490 | 10.277 | 13.408 | 160.496 |
+| hera-coord | quiet | stall_ms | 635 | 0.000 | 0.000 | 128.618 | 157.437 |
+| hera-coord | quiet | quiet_ms | 635 | 110.068 | 245.323 | 1543.186 | 7594.627 |
+| tasks | all | total_ms | 1723 | 7.088 | 9.335 | 23.370 | 64.021 |
+| tasks | all | queue_ms | 1723 | 0.009 | 0.021 | 13.412 | 25.908 |
+| tasks | all | arrive_ms | 1723 | 2.513 | 3.087 | 5.549 | 44.686 |
+| tasks | all | paint_ms | 1723 | 4.596 | 5.606 | 7.537 | 24.384 |
+| tasks | all | stall_ms | 1723 | 0.000 | 0.000 | 11.268 | 19.242 |
+| tasks | all | quiet_ms | 1723 | 94.615 | 211.244 | 1401.612 | 25237.193 |
+| tasks | quiet | total_ms | 1453 | 7.095 | 9.375 | 23.380 | 64.021 |
+| tasks | quiet | queue_ms | 1453 | 0.009 | 0.021 | 14.777 | 25.908 |
+| tasks | quiet | arrive_ms | 1453 | 2.527 | 3.146 | 5.239 | 44.686 |
+| tasks | quiet | paint_ms | 1453 | 4.599 | 5.652 | 7.081 | 23.605 |
+| tasks | quiet | stall_ms | 1453 | 0.000 | 0.000 | 11.708 | 19.242 |
+| tasks | quiet | quiet_ms | 1453 | 101.834 | 233.710 | 1759.490 | 25237.193 |
+
+All-sample total medians improve from Before to After: Tasks **20.670→7.088ms**, coordinator **52.315→9.221ms**, worker **6.818→4.516ms**. Quiet medians are Tasks **20.692→7.095ms** and coordinator **53.725→9.172ms**; worker quiet cannot be compared. Arrival medians of 2.513/2.560/0.673ms measure the entire session/agent return path and do not isolate individual relay hops. They do not identify a relay bottleneck requiring a scope change. Measured busy pump counters later reach about 38fps; the assumed 30Hz producer rate is not treated as a fact.
+
+Evidence: `/tmp/argus-paint-after.GB4lCf/filter-after-final.py`, `paired-after-typing-final.txt`, `paired-after-typing-clean.txt`, `paired-after-exclusions.json` and `paired-after-report-clean.txt`. The final report supersedes the earlier interim report. CPU comparisons and acceptance use the separately audited captures below.
+
+### CPU view controls and rate candidates
 
 The initial CPU captures did not hold the visible workload fixed. Before's 8.43% profile began at 11:12:41 and overlapped a Ctrl+Z fullscreen transition at 11:12:46.091 (coordinator pane width 89→178). The first 8ms After busy profile used the Hera split with coordinator and worker output visible. These numbers are preserved as exploratory evidence and do not determine the like-for-like CPU gate.
 

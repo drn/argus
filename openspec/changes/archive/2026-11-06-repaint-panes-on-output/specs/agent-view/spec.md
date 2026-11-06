@@ -7,7 +7,7 @@
 
 ### Requirement: PTY sync loop liveness is unique per task
 
-While a task's agent view is active, the system SHALL keep at most one live
+While a task's agent view is active, including its visible Tasks rail pane, the system SHALL keep at most one live
 PTY sync loop for that task at any time. The loop SHALL keep the session's PTY
 size in sync with the pane and SHALL NOT queue repaints; repainting on output
 is handled separately (see the terminal-rendering capability). Starting a new
@@ -35,3 +35,8 @@ memory for the remaining life of the process.
 
 - **WHEN** the pane's size changes while the agent view is active
 - **THEN** the loop applies the pending PTY resize off the UI goroutine and does not itself queue a repaint
+
+#### Scenario: The Tasks rail keeps its viewed task's size loop alive
+
+- **WHEN** the Tasks rail is showing a task's terminal while the app remains in task-list mode
+- **THEN** the current PTY sync loop remains live for that task, and a hidden rail or a superseding generation stops it

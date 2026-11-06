@@ -32,15 +32,15 @@ Baseline verification: `make pre-pr` was run in full; Go 1.26.8's 11 standard-li
 
 ## 4. Measure and tune
 
-- [ ] 4.1 Repeat the capture with the `argus-repaint` binary, per "After capture" in `design.md`, and record under "After" in `measurements.md`.
-- [ ] 4.2 Compare busy-agent CPU. If it rises more than 10 points of one core on the same workload, apply the tuning order in `design.md` and re-measure.
-- [ ] 4.3 Check `arrive_ms` and the `[repaint]` lines against the two unmeasured assumptions (relay hop cost, Claude's redraw rate). If relay hops matter, tell the coordinator, because scope changes.
+- [x] 4.1 Repeat the capture with the `argus-repaint` binary, per "After capture" in `design.md`, and record under "After" in `measurements.md`.
+- [x] 4.2 Compare busy-agent CPU. If it rises more than 10 points of one core on the same workload, apply the tuning order in `design.md` and re-measure.
+- [x] 4.3 Check `arrive_ms` and the `[repaint]` lines against the two unmeasured assumptions (relay hop cost, Claude's redraw rate). If relay hops matter, tell the coordinator, because scope changes.
 
 ## 4a. Bound terminal-size query cost (coordinator approved)
 
 - [x] 4a.1 Add failing fake-TTY tests for successful-query reuse, exact 1-second expiry, resize invalidation before callback, error passthrough, Start/resume/Stop and concurrent invalidation. Add a SimulationScreen test for production screen setup.
 - [x] 4a.2 Implement a cached tcell.Tty wrapper, preserve 8ms repainting and all normal Clear/Draw/Show behavior, document gotchas and confirm protocols/supervisor surface are unchanged.
-- [ ] 4a.3 Run both review lenses and full local gates, commit locally without pushing, then build a fresh scratch binary and report its path and SHA-256. Remeasure BUSY with typing diagnostics on; IDLE follows only if BUSY is at most 17.38% of one core.
+- [x] 4a.3 Run both review lenses and full local gates, commit locally without pushing, then build a fresh scratch binary and report its path and SHA-256. Remeasure BUSY with typing diagnostics on; follow the coordinator's fresh BASE+10-point amendment before IDLE.
 
 Cache review: `hera-review` and `hera-review-test-adversary` identified and resolved test gaps in production factory integration and actual paste-handler delivery; the SimulationScreen setup test also observes mouse/paste enablement after Init, because injected paste events alone cannot detect broken initialization order. Real tcell Show tests exercise the production factory, exact TTL expiry, and notified/missed resizes. Final 1-second focused race tests pass. Full `make pre-pr` passes build/vet/format/lint (0 issues), then stops at the same 11 standard-library vulnerabilities covered by the coordinator's advisory exception; its exit status is preserved. The separate full race/coverage gate passes at 89.0% (40,622/45,658 statements; 13 excluded files). All 78 strict OpenSpec validations pass. ProtocolVersion remains 11, and `TestSupervisorSurfaceDigest` passes without changing its expected digest. The controlled remeasurement remains pending.
 
@@ -48,7 +48,7 @@ Cache review: `hera-review` and `hera-review-test-adversary` identified and reso
 
 - [x] 4b.1 Add fixed-viewport benchmarks for rectangle filling, fresh terminal painting and cache replay; record baseline allocs/op and add allocation/output equivalence tests.
 - [x] 4b.2 Reuse fill and cell strings through Put, retaining glyph/style/blank-fill semantics and existing cache invalidation; document the allocation gotcha.
-- [ ] 4b.3 Run both review lenses and local gates, commit locally, build a fresh scratch binary and report its path/checksum for the same controlled BUSY protocol. No rate fallback, push or PR without coordinator direction.
+- [x] 4b.3 Run both review lenses and local gates, commit locally, build a fresh scratch binary and report its path/checksum for the same controlled BUSY protocol. No rate fallback, push or PR without coordinator direction.
 
 Allocation verification: `hera-review` and `hera-review-test-adversary` completed with no remaining findings after fixing the fixture-only drain/Close race and checking cleanup errors. Allocation guards failed against the old implementation and pass with Put; output equivalence covers Unicode first-rune behavior, styles, widths, clipping, blank rows and immutable cache replay after emulator mutation. Full `make pre-pr` passes build/vet/format/lint (0 issues), then stops at the known 11 standard-library CVEs under the coordinator's advisory exception, preserving exit status. Separate full race/coverage passes at 89.0% (40,633/45,663 statements, 13 excluded files); all 78 strict OpenSpec validations and the unchanged supervisor surface digest pass. tview's private dontClear flag has no public setter, so no Box background suppression was attempted. Controlled BUSY remeasurement remains pending.
 
@@ -58,5 +58,7 @@ Allocation verification: `hera-review` and `hera-review-test-adversary` complete
 - [x] 5.2 Run `make pre-pr` in full.
 
 Repaint verification (2026-11-05): the full gate passes build/vet/format/lint (0 issues), then stops at the same 11 Go 1.26.8 standard-library vulnerabilities covered by the coordinator's advisory exception. The separate full `test-cover-gate` passes with fixture environment, `GOFLAGS=-p=3`, and 88.9% filtered coverage. Focused race tests, `TestSupervisorSurfaceDigest` without re-recording, and all 78 strict OpenSpec validations pass. `hera-review` and `hera-review-test-adversary` findings were fixed and rechecked; measurement, tuning, archive, push and PR remain pending.
-- [ ] 5.3 Archive only this change in the same PR (`openspec archive repaint-panes-on-output`). The other two change folders stay active.
+- [x] 5.3 Archive only this change in the same PR (`openspec archive repaint-panes-on-output`). The other two change folders stay active.
 - [ ] 5.4 Push with `iris_push`, open the PR with `iris_gh_pr_create` including both measurement tables, and state in the description that web and macOS are unaffected and that no supervisor restart is needed.
+
+Final measurement acceptance (2026-11-06): coordinator accepted fresh BASE 24.99%→cellstrings 22.11% busy and 4.39% idle, with explicit load/refresh variance and +10.66-point draw/Show cost documented. The original 8ms After typing capture retains 2,961 samples after deterministic interruption checks; no relay bottleneck was identified. The 20–30fps output-only cap with immediate keystroke echo is a named follow-up, not implemented. Rebase onto current master 4512d736 preserves the new Tasks rail visibility condition; a regression test covers current/hidden/superseded rail loops. Step 5.4 is the external post-archive action and remains pending until the PR is created.

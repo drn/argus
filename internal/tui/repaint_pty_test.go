@@ -38,3 +38,28 @@ func TestPTYSyncLoopKeepsResizeWithoutDrawQueue(t *testing.T) {
 		// loop and prevent this synctest bubble from terminating.
 	})
 }
+
+func TestPTYSyncLoopTasksRailVisibility(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	a := New(testDB(t), agent.NewRunner(nil), false)
+	a.mode = modeTaskList
+	a.agentState.TaskID = "rail-task"
+	for _, tc := range []struct {
+		name       string
+		rail       bool
+		task       string
+		generation uint64
+		exit       bool
+	}{
+		{"visible rail", true, "rail-task", 1, false},
+		{"hidden rail", false, "rail-task", 1, true},
+		{"another task", true, "other", 1, true},
+		{"superseded rail loop", true, "rail-task", 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a.tasksRailViewing = tc.rail
+			a.ptySyncLoopGen["rail-task"] = tc.generation
+			testutil.Equal(t, a.ptySyncLoopShouldExit(tc.task, 1), tc.exit)
+		})
+	}
+}
