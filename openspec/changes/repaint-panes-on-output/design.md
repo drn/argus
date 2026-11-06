@@ -43,6 +43,7 @@ Other facts this design relies on:
 - **TUI memory:** 3.9 GB RSS after 4 days, about 1 GB of heap in `Scrollback.Push`, and 75 goroutines blocked in `Emulator.Read`. Possibly another leak like #959/#963; unconfirmed.
 - **Daemon profiling:** the daemon has no pprof listener, so its CPU could not be broken down.
 - **Spinner scope:** `spinnerLoop` stays fleet-wide outside the Tasks list. This is the existing named follow-up in `computeVisibleActiveSpinner`'s comment.
+- **Output-only frame-rate cap:** follow-up lever accepted by the coordinator after the fresh A/B: coalesce output-only frames at 20–30fps while keeping keystroke echo immediate. This PR retains the 8ms cap; the measured draw/flush increase of about 10.7 CPU points is documented explicitly rather than hidden by variable refresh work.
 - **MySQL dev-stack CPU load:** a separate Hera coordinator owns it.
 
 ## Decisions

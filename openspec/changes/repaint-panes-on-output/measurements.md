@@ -183,6 +183,28 @@ Following the valid-but-uncontrolled run, the coordinator directed a back-to-bac
 - **Refresh split:** refreshTasksWithIDs **3.55s** (~17.71% of one core), including Hera.doRefresh **2.36s** (~11.77%). The residual after subtracting refresh once from total is **1.46s** (~7.28%); that residual includes all non-refresh work and is not a pure paint metric. Application.draw is the separate draw/flush comparison for PR 1.
 - **Evidence:** `/tmp/argus-paint-cellstrings.BjC0vj/pprof.argus-baseline.samples.cpu.001.pb.gz`, `fresh-base-busy.txt`, `fresh-base-busy-cum.txt`, `fresh-base-busy-start.txt` and `fresh-base-busy-load.txt`. Producer and profiler stopped; await explicit cellstrings go.
 
+### Fresh A/B: cellstrings capture and comparison
+
+- **Executable:** independently verified listener PID 46650 at `/private/tmp/argus-paint-cellstrings.BjC0vj/argus-repaint-cellstrings`, unchanged binary/commit/checksum from the allocation follow-up. Launch resize and both process binds ended at 00:56:41, before capture.
+- **Capture:** identical 24-second/600-line producer and 20-second profile completed. Native start **2026-11-06 00:57:17 PST**, duration **20.13s**, CPU samples **4.45s**, or **22.11% of one core**. Versus fresh BASE **24.99%**, total delta is **−2.88 percentage points**; the stated **34.99% total-CPU limit passes** by **12.88 points**. IDLE awaits a separate coordinator go.
+- **Audit:** no cross-tab, agent-view enter/exit, fullscreen width change, PTY/afterDraw resize, rerender stop, bind or selection marker in the inclusive **00:57:17–00:57:39** window. Same 214×52 split remains drawn. The 30-second counter ending **00:57:40.827** records **1,212 wakes / 1,150 output-driven frames**, or **38.33 frames/s**; it contains the full CPU interval plus adjacent time, and excludes spinner/tick draws.
+- **Machine context:** load **7.05 / 12.60 / 15.01**, uptime 18 days, 10:58. BASE load was **22.60 / 20.94 / 17.69**, roughly 6.5 minutes earlier. This back-to-back sequence still experienced a substantial load and refresh-work decrease, so the total reduction does not isolate the repaint change's cost.
+
+| Cumulative CPU path | Fresh BASE | Cellstrings |
+| --- | ---: | ---: |
+| Application.draw (draw/flush) | 1.03s | 3.18s |
+| Show | 0.35s | 2.38s |
+| TerminalPane.Draw | 0.41s | 0.51s |
+| SetContent | 0.53s | 0.33s |
+| Box.DrawForSubclass | 0.32s | 0.31s |
+| paintEmu | 0.11s | 0.15s |
+| refreshTasksWithIDs | 3.55s | 0.83s |
+| Hera.doRefresh (within refresh) | 2.36s | 0.11s |
+
+These cumulative rows overlap and must not be summed. Application.draw excludes task/Hera refresh and normalizes to **5.14%→15.80% of one core**, a **+10.66-point draw/flush increase**, chiefly Show (**0.35s→2.38s**) while painting about 38 output-driven frames/s instead of the old timer cadence. Refresh normalizes to **17.71%→4.12%**, which offsets that increase in the total result. The coordinator accepted the busy guard on its defined total-CPU basis and required this draw-path cost in the PR body as well. **Named follow-up lever: coalesce output-only frames at 20–30fps while keeping keystroke echo immediate.** That rate change is outside this PR and has not been implemented.
+
+Evidence is under `/tmp/argus-paint-cellstrings.BjC0vj/`: raw `pprof.argus-repaint-cellstrings.samples.cpu.002.pb.gz`, `fresh-cellstrings-busy.txt`, `fresh-cellstrings-busy-cum.txt`, `fresh-cellstrings-busy-start.txt`, `fresh-cellstrings-busy-load.txt` and `fresh-cellstrings-repaint-windows.txt`. Producer and profiler stopped; no push or PR.
+
 ### Operator steps
 
 The coordinator approved completing the remaining Before and After typing and busy CPU captures back-to-back. Keep the same terminal size and daemon/supervisor deployment, and choose **Skip/Esc** in both skew modals. Close only the TUI between runs.
