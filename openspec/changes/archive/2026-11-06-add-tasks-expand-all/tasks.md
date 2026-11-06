@@ -11,4 +11,4 @@
 ## 3. Delivery
 
 - [x] 3.1 Reconcile and archive final expansion specs; run coverage/race checks and full make pre-pr.
-- [ ] 3.2 Include both approved changes in the PR and report to coord.
+- [x] 3.2 Include both approved changes in the PR and report to coord. PR: https://github.com/drn/argus/pull/1112.

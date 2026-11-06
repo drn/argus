@@ -29,4 +29,4 @@
 - [x] 6.1 Document non-obvious invariants in the relevant gotcha files and run the targeted race tests and touched-package coverage checks.
 - [x] 6.2 Review the implementation using hera-review and the test-adversary lens; resolve findings.
 - [x] 6.3 Archive the change into base specs on this branch, run strict spec validation, and run the full `make pre-pr` gate clean.
-- [ ] 6.4 Commit, push through iris, open the PR through `iris_gh_pr_create`, and report its URL and validation evidence to coord.
+- [x] 6.4 Commit, push through iris, open the PR through `iris_gh_pr_create`, and report its URL and validation evidence to coord. PR: https://github.com/drn/argus/pull/1112.
