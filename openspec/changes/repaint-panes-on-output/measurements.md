@@ -205,6 +205,14 @@ These cumulative rows overlap and must not be summed. Application.draw excludes 
 
 Evidence is under `/tmp/argus-paint-cellstrings.BjC0vj/`: raw `pprof.argus-repaint-cellstrings.samples.cpu.002.pb.gz`, `fresh-cellstrings-busy.txt`, `fresh-cellstrings-busy-cum.txt`, `fresh-cellstrings-busy-start.txt`, `fresh-cellstrings-busy-load.txt` and `fresh-cellstrings-repaint-windows.txt`. Producer and profiler stopped; no push or PR.
 
+### Cellstrings IDLE check
+
+- **Setup:** no producer. Worker independently re-verified listener PID 46650 at the unchanged cellstrings executable. Aaron reported Tasks tab, groups collapsed, nothing selected and Preview empty; last tab move was **01:06:57.363**, before capture.
+- **Result:** native start **2026-11-06 01:07:21 PST**, duration **20.04s**, CPU samples **880ms**, or **4.39% of one core**. This is **5.14 percentage points below** the old BASE idle **9.53%**, so the coordinator's requested above-baseline flag is not triggered. The old BASE is not a contemporaneous idle A/B; do not infer a controlled causal reduction from this difference.
+- **Audit/load:** inclusive **01:07:20–01:07:42** contains no tab/view, fullscreen, PTY/afterDraw resize, rerender stop, bind or selection marker, and no `[repaint]` record. The preceding 01:07:10 counter belongs to the transition period. Load **4.54 / 5.52 / 9.65**, uptime 18 days, 11:08.
+- **CPU attribution:** onTick QueueUpdateDraw **770ms**, refreshTasksWithIDs **710ms**, detectNeedsInputSticky **650ms**, detectNeedsInput **550ms**, readSessionLogRawTail/SubstantiveTail **400ms**, os.Open **400ms**. These nested cumulative paths are not additive. Application.draw is **60ms**, Show **30ms**; flat rawsyscalln **550ms**. Existing tick/scan work dominates this quiet screen.
+- **Evidence:** `/tmp/argus-paint-cellstrings.BjC0vj/pprof.argus-repaint-cellstrings.samples.cpu.003.pb.gz`, `fresh-cellstrings-idle.txt`, `fresh-cellstrings-idle-cum.txt`, `fresh-cellstrings-idle-start.txt` and `fresh-cellstrings-idle-load.txt`. No producer or profiler remains running. Results reported to coordinator; push and PR remain unauthorized.
+
 ### Operator steps
 
 The coordinator approved completing the remaining Before and After typing and busy CPU captures back-to-back. Keep the same terminal size and daemon/supervisor deployment, and choose **Skip/Esc** in both skew modals. Close only the TUI between runs.
