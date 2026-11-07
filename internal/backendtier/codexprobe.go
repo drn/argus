@@ -488,6 +488,7 @@ func renderCodexPTY(raw []byte) (out string) {
 
 	if codexRenderState.emu == nil {
 		codexRenderState.emu = xvt.NewSafeEmulator(codexPtyCols, codexPtyRows)
+		codexRenderState.emu.Emulator.SetScrollbackSize(1) // text-scrape only: RIS leaves scrollback behind
 		codexRenderState.cols = codexPtyCols
 		codexRenderState.rows = codexPtyRows
 		go io.Copy(io.Discard, codexRenderState.emu) //nolint:errcheck
@@ -496,6 +497,7 @@ func renderCodexPTY(raw []byte) (out string) {
 			uxlog.Log("[backendtier] emulator reset failed: %v", err)
 			return ""
 		}
+		codexRenderState.emu.ClearScrollback()
 		if codexRenderState.cols != codexPtyCols || codexRenderState.rows != codexPtyRows {
 			codexRenderState.emu.Resize(codexPtyCols, codexPtyRows)
 			codexRenderState.cols = codexPtyCols

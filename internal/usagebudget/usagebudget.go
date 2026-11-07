@@ -566,6 +566,7 @@ func resetEmulator() {
 
 	if renderState.emu == nil {
 		renderState.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
+		renderState.emu.Emulator.SetScrollbackSize(1) // text-scrape only: RIS leaves scrollback behind
 		renderState.cols = ptyCols
 		renderState.rows = ptyRows
 		go io.Copy(io.Discard, renderState.emu) //nolint:errcheck
@@ -574,6 +575,7 @@ func resetEmulator() {
 	if _, err := renderState.emu.Write([]byte("\x1bc")); err != nil {
 		uxlog.Log("[usagebudget] emulator reset failed: %v", err)
 	}
+	renderState.emu.ClearScrollback()
 	if renderState.cols != ptyCols || renderState.rows != ptyRows {
 		renderState.emu.Resize(ptyCols, ptyRows)
 		renderState.cols = ptyCols
