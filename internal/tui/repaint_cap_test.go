@@ -318,3 +318,26 @@ func TestApp_PasteStampsRepaintPump(t *testing.T) {
 	a.agentPane.PasteHandler()("lost", func(tview.Primitive) {})
 	testutil.Equal(t, a.repaint.inEchoWindow(), false)
 }
+
+// A click forwarded through the real MouseHandler of a pump-wired pane opens the
+// echo window; wheel scrolling does not.
+func TestApp_ForwardedClickStampsRepaintPump(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	a := New(testDB(t), agent.NewRunner(nil), false)
+	tapp, _, _ := simApp(t)
+	a.tapp = tapp
+	a.tickDone = make(chan struct{})
+	a.startOutputRepaint()
+	t.Cleanup(func() { close(a.tickDone); <-a.repaint.stopped; a.repaint.close() })
+	pane := a.agentPane
+	pane.SetSession(newRepaintSession())
+	pane.SetFocused(true)
+	pane.SetRect(0, 0, 80, 24)
+	h := pane.MouseHandler()
+	a.repaint.lastKey.Store(0)
+	h(tview.MouseLeftDown, tcell.NewEventMouse(10, 5, tcell.Button1, tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, a.repaint.inEchoWindow(), true)
+	a.repaint.lastKey.Store(0)
+	h(tview.MouseScrollUp, tcell.NewEventMouse(10, 5, tcell.WheelUp, tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, a.repaint.inEchoWindow(), false)
+}

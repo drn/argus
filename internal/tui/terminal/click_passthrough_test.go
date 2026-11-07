@@ -147,3 +147,67 @@ func TestTerminalPane_MouseLeftClick_DoesNotDuplicateForward(t *testing.T) {
 		t.Errorf("MouseLeftClick must not write additional bytes: before %q, after %q", wroteAfterUp, sess.wrote)
 	}
 }
+
+// A click forwarded to a live agent often makes it redraw (Claude Code's
+// "Jump to bottom (click)"), so the press and the release must each report user
+// input and open the repaint pump's fast echo window. Clicks that do not reach
+// the PTY, and wheel scrolling (not an echo), must not.
+func TestTerminalPane_ForwardedClick_ReportsUserInput(t *testing.T) {
+	cases := []struct {
+		name      string
+		focused   bool
+		session   *recAdapter
+		wantPress int
+		wantTotal int
+	}{
+		{name: "focused live session reports press and release", focused: true, session: &recAdapter{alive: true}, wantPress: 1, wantTotal: 2},
+		{name: "unfocused pane only focuses, reports nothing", focused: false, session: &recAdapter{alive: true}},
+		{name: "dead session reports nothing", focused: true, session: &recAdapter{alive: false}},
+		{name: "no session reports nothing", focused: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tp := NewTerminalPane()
+			tp.SetTaskID("")
+			if tc.session != nil {
+				tp.SetSession(tc.session)
+			}
+			tp.SetFocused(tc.focused)
+			tp.SetRect(0, 0, 80, 24)
+			calls := 0
+			tp.OnUserInput = func() { calls++ }
+
+			h := tp.MouseHandler()
+			h(tview.MouseLeftDown, tcell.NewEventMouse(10, 5, tcell.Button1, tcell.ModNone), func(tview.Primitive) {})
+			if calls != tc.wantPress {
+				t.Fatalf("after press: %d reports, want %d", calls, tc.wantPress)
+			}
+			h(tview.MouseLeftUp, tcell.NewEventMouse(10, 5, tcell.ButtonNone, tcell.ModNone), func(tview.Primitive) {})
+			if calls != tc.wantTotal {
+				t.Fatalf("after release: %d reports, want %d", calls, tc.wantTotal)
+			}
+		})
+	}
+
+	t.Run("unwired pane does not panic", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.SetSession(&recAdapter{alive: true})
+		tp.SetFocused(true)
+		tp.SetRect(0, 0, 80, 24)
+		h := tp.MouseHandler()
+		h(tview.MouseLeftDown, tcell.NewEventMouse(10, 5, tcell.Button1, tcell.ModNone), func(tview.Primitive) {})
+		h(tview.MouseLeftUp, tcell.NewEventMouse(10, 5, tcell.ButtonNone, tcell.ModNone), func(tview.Primitive) {})
+	})
+
+	t.Run("wheel is not echo input", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.SetSession(&recAdapter{alive: true})
+		tp.SetRect(0, 0, 80, 24)
+		calls := 0
+		tp.OnUserInput = func() { calls++ }
+		tp.forwardWheel(64, tcell.NewEventMouse(10, 5, tcell.WheelUp, tcell.ModNone))
+		if calls != 0 {
+			t.Fatalf("wheel reported user input %d times", calls)
+		}
+	})
+}

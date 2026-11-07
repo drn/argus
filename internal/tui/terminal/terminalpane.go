@@ -232,8 +232,9 @@ type cachedCell struct {
 // PTY output without Argus-injected highlights.
 type TerminalPane struct {
 	// OnUserInput, when set before the UI loop starts, is called on the UI
-	// goroutine when the pane forwards a bracketed paste to a live session
-	// (pastes bypass the app's key capture). It must not block.
+	// goroutine when the pane forwards a bracketed paste or a mouse click to a
+	// live session (neither passes through the app's key capture). Wheel
+	// scrolling is not reported: it is not an echo. It must not block.
 	OnUserInput func()
 	// Frame observations are owned by the UI goroutine and consumed afterDraw.
 	painted      bool
@@ -1624,6 +1625,14 @@ func (tp *TerminalPane) forwardWheel(cb int, event *tcell.EventMouse) {
 	}
 }
 
+// reportUserInput tells the owner (the repaint pump) that user input just
+// reached the PTY. Nil-safe: panes outside the repaint pump leave it unset.
+func (tp *TerminalPane) reportUserInput() {
+	if tp.OnUserInput != nil {
+		tp.OnUserInput()
+	}
+}
+
 // forwardClickPress writes an SGR left-button mouse press (ESC [ < 0 ; Cx ; Cy
 // M) to a live agent session and arms forwardingClick so the matching
 // MouseLeftUp delivers the release (see MouseHandler). Returns false — and
@@ -1649,6 +1658,7 @@ func (tp *TerminalPane) forwardClickPress(event *tcell.EventMouse) bool {
 	if _, err := sess.WriteInput([]byte(fmt.Sprintf("\x1b[<0;%d;%dM", cx, cy)), agentview.OriginUser); err != nil {
 		uxlog.Log("[terminalpane] click-forward press write failed: %v", err)
 	}
+	tp.reportUserInput() // the agent may redraw in response; give that echo the fast cap
 	tp.forwardingClick = true
 	return true
 }
@@ -1675,6 +1685,7 @@ func (tp *TerminalPane) forwardClickRelease(event *tcell.EventMouse) bool {
 	if _, err := sess.WriteInput([]byte(fmt.Sprintf("\x1b[<0;%d;%dm", cx, cy)), agentview.OriginUser); err != nil {
 		uxlog.Log("[terminalpane] click-forward release write failed: %v", err)
 	}
+	tp.reportUserInput()
 	return true
 }
 
@@ -1690,9 +1701,7 @@ func (tp *TerminalPane) PasteHandler() func(pastedText string, setFocus func(p t
 			// pasted text echoes on screen instead of off the bottom of a
 			// scrolled-up viewport. Anchor-lock (output growth) is untouched.
 			tp.ResetScroll()
-			if tp.OnUserInput != nil {
-				tp.OnUserInput() // bracketed paste never reaches the app's key capture
-			}
+			tp.reportUserInput() // bracketed paste never reaches the app's key capture
 			// Write the entire paste as a single PTY write, wrapped in
 			// bracket paste sequences so the agent's readline sees it as
 			// a paste (no per-character echo/processing).
