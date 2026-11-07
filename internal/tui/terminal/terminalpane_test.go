@@ -2993,13 +2993,48 @@ func TestUvCellToTcellStyle_Strikethrough(t *testing.T) {
 }
 
 func TestUvCellToTcellStyle_Hyperlink(t *testing.T) {
-	cell := &uv.Cell{
-		Content: "L",
-		Width:   1,
-		Style:   uv.Style{},
-		Link:    uv.Link{URL: "https://example.com"},
+	plain := UvCellToTcellStyle(&uv.Cell{Content: "L", Width: 1})
+	tests := []struct {
+		name string
+		link uv.Link
+		want tcell.Style
+	}{
+		{"no link", uv.Link{}, plain},
+		{"url only", uv.Link{URL: "https://example.com"}, plain.Url("https://example.com")},
+		{"url with id", uv.Link{URL: "https://example.com", Params: "id=ub9bei"}, plain.Url("https://example.com").UrlId("ub9bei")},
+		{"params without id", uv.Link{URL: "https://example.com", Params: "foo=bar"}, plain.Url("https://example.com")},
 	}
-	_ = UvCellToTcellStyle(cell)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := UvCellToTcellStyle(&uv.Cell{Content: "L", Width: 1, Link: tt.link})
+			if got != tt.want {
+				t.Errorf("style mismatch for %+v", tt.link)
+			}
+		})
+	}
+}
+
+// TestHyperlink_EndToEnd drives real Claude Code OSC-8 bytes through the
+// pane's actual feed path (FilterOSC → x/vt → UvCellToTcellStyle). The August
+// 2026 hyperlink fix tested the emulator alone and missed that FilterOSC
+// dropped every link; keep this test on the full path.
+func TestHyperlink_EndToEnd(t *testing.T) {
+	const url = "https://app.notion.com/p/410a84ed402481318dc9eeea9ab6410d?pvs=204"
+	raw := []byte("\x1b]8;id=ub9bei;" + url + "\x07\x1b[94mArgus\x1b]8;;\x07\x1b[39m plain")
+	emu := NewDrainedEmulator(40, 3)
+	_, _ = SafeEmuWrite(emu, FilterOSC(raw))
+
+	for x := 0; x < len("Argus"); x++ {
+		cell := emu.CellAt(x, 0)
+		unlinked := *cell
+		unlinked.Link = uv.Link{}
+		want := UvCellToTcellStyle(&unlinked).Url(url).UrlId("ub9bei")
+		if got := UvCellToTcellStyle(cell); got != want {
+			t.Fatalf("col %d (%q): link=%+v not mapped to url+id", x, cell.Content, cell.Link)
+		}
+	}
+	plainCell := emu.CellAt(len("Argus")+1, 0)
+	testutil.Equal(t, plainCell.Link.URL, "")
 }
 
 // ---------- Scrollback pipeline defects ----------

@@ -783,3 +783,24 @@ func TestEventBytes_AllCases(t *testing.T) {
 		})
 	}
 }
+
+func TestUvCellToTcellStyle_Hyperlink(t *testing.T) {
+	plain := uvCellToTcellStyle(&uv.Cell{Content: "L", Width: 1})
+	tests := []struct {
+		name string
+		link uv.Link
+		want tcell.Style
+	}{
+		{"no link", uv.Link{}, plain},
+		{"url only", uv.Link{URL: "https://example.com/pr/1"}, plain.Url("https://example.com/pr/1")},
+		{"url with id", uv.Link{URL: "https://example.com/pr/1", Params: "id=pr1"}, plain.Url("https://example.com/pr/1").UrlId("pr1")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := uvCellToTcellStyle(&uv.Cell{Content: "L", Width: 1, Link: tt.link})
+			if got != tt.want {
+				t.Errorf("style mismatch for %+v", tt.link)
+			}
+		})
+	}
+}

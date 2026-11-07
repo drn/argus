@@ -24,8 +24,12 @@ func TestStrip(t *testing.T) {
 		// or the tail of the title leaks onto the screen.
 		{"osc utf8 title with 0x9c", "\x1b]0;\xe2\x9c\xb3 Review Iris\x07after", "after"},
 		{"osc utf8 mid title", "\x1b]2;ab\xe2\x9c\xb3cd\x07Z", "Z"},
-		// OSC-8 hyperlink: the URL wrappers are dropped, the visible text stays.
-		{"osc8 hyperlink", "\x1b]8;;http://x\x07link\x1b]8;;\x07Z", "linkZ"},
+		// OSC-8 hyperlinks pass through (terminator normalized to ST) so the
+		// emulator can record the link; see TestFilter_Hyperlinks.
+		{"osc8 hyperlink", "\x1b]8;;http://x\x07link\x1b]8;;\x07Z", "\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\Z"},
+		// Only exactly "8;" opens a hyperlink; OSC 80… is still stripped.
+		{"osc 80 stripped", "\x1b]80;x\x07Z", "Z"},
+		{"osc 8 without semicolon stripped", "\x1b]8\x07Z", "Z"},
 		// Non-OSC escape sequences pass through untouched.
 		{"csi passthrough", "\x1b[1mhi\x1b[0m", "\x1b[1mhi\x1b[0m"},
 		{"esc M passthrough", "\x1bMX", "\x1bMX"},
@@ -129,4 +133,110 @@ func TestOSCFilter_FixesEmulatorLeak(t *testing.T) {
 	go io.Copy(io.Discard, filtered) //nolint:errcheck
 	filtered.Write(Strip(leakySeq))  //nolint:errcheck
 	testutil.Equal(t, row(filtered), "                                        ")
+}
+
+func TestFilter_Hyperlinks(t *testing.T) {
+	const st = "\x1b\\"
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"claude code link with id param, BEL terminated",
+			"\x1b]8;id=ub9bei;https://app.notion.com/p/abc?pvs=204\x07\x1b[94mHi\x1b]8;;\x07",
+			"\x1b]8;id=ub9bei;https://app.notion.com/p/abc?pvs=204" + st + "\x1b[94mHi\x1b]8;;" + st,
+		},
+		{
+			"ST terminated passes through unchanged",
+			"\x1b]8;;https://x.test/a\x1b\\L\x1b]8;;\x1b\\",
+			"\x1b]8;;https://x.test/a" + st + "L\x1b]8;;" + st,
+		},
+		{
+			// ✳ = E2 9C B3: the 0x9C must never reach the parser inside an OSC.
+			"non-ascii bytes percent-encoded",
+			"\x1b]8;;https://x.test/\xe2\x9c\xb3\x07L",
+			"\x1b]8;;https://x.test/%E2%9C%B3" + st + "L",
+		},
+		{
+			"control bytes percent-encoded",
+			"\x1b]8;;https://x.test/a\x01b\x7f\x07L",
+			"\x1b]8;;https://x.test/a%01b%7F" + st + "L",
+		},
+		{"malformed hyperlink without uri separator stripped", "\x1b]8;nouri\x07L", "L"},
+		{"can cancels hyperlink", "\x1b]8;;https://x\x18L", "L"},
+		{"sub cancels hyperlink", "\x1b]8;;https://x\x1aL", "L"},
+		{"fresh esc cancels hyperlink", "\x1b]8;;https://x\x1b[1mL", "\x1b[1mL"},
+		{"title then link", "\x1b]0;\xe2\x9c\xb3 t\x07\x1b]8;;u\x07L", "\x1b]8;;u" + st + "L"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.Equal(t, string(Strip([]byte(tt.in))), tt.want)
+		})
+	}
+}
+
+func TestFilter_HyperlinkSplitAcrossFeeds(t *testing.T) {
+	in := "\x1b]8;id=1;https://x.test/\xe2\x9c\xb3\x07Hi\x1b]8;;\x1b\\"
+	want := "\x1b]8;id=1;https://x.test/%E2%9C%B3\x1b\\Hi\x1b]8;;\x1b\\"
+	// Split at every possible byte boundary.
+	for cut := 1; cut < len(in); cut++ {
+		var f Filter
+		got := string(f.Filter([]byte(in[:cut])))
+		got += string(f.Filter([]byte(in[cut:])))
+		got += string(f.Flush())
+		if got != want {
+			t.Fatalf("cut=%d: got %q, want %q", cut, got, want)
+		}
+	}
+}
+
+func TestFilter_OversizedHyperlinkStripped(t *testing.T) {
+	url := make([]byte, maxHyperlinkBytes+10)
+	for i := range url {
+		url[i] = 'a'
+	}
+	in := "\x1b]8;;" + string(url) + "\x07link\x1b]8;;\x07"
+	got := string(Strip([]byte(in)))
+	testutil.Equal(t, got, "link\x1b]8;;\x1b\\")
+}
+
+func TestFilter_ResetClearsHyperlink(t *testing.T) {
+	var f Filter
+	f.Filter([]byte("\x1b]8;;https://partial"))
+	f.Reset()
+	testutil.Equal(t, string(f.Filter([]byte("clean\x07"))), "clean\x07")
+}
+
+func TestHyperlinkID(t *testing.T) {
+	tests := []struct{ params, want string }{
+		{"", ""},
+		{"id=ub9bei", "ub9bei"},
+		{"foo=bar:id=x1", "x1"},
+		{"id=x1:foo=bar", "x1"},
+		{"identity=nope", ""},
+		{"id=", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.params, func(t *testing.T) {
+			testutil.Equal(t, HyperlinkID(tt.params), tt.want)
+		})
+	}
+}
+
+// TestFilter_HyperlinkReachesEmulator drives real Claude Code OSC-8 bytes
+// through the filter into x/vt and checks the cell records the link. The
+// August 2026 fix tested the emulator directly and missed that the filter
+// dropped every link; this test exists so that can't happen again.
+func TestFilter_HyperlinkReachesEmulator(t *testing.T) {
+	in := []byte("\x1b]8;id=ub9bei;https://app.notion.com/p/abc?pvs=204\x07\x1b[94mHi\x1b]8;;\x07 x")
+	emu := xvt.NewSafeEmulator(20, 2)
+	go io.Copy(io.Discard, emu) //nolint:errcheck
+	emu.Write(Strip(in))        //nolint:errcheck
+	for x := 0; x < 2; x++ {
+		c := emu.CellAt(x, 0)
+		testutil.Equal(t, c.Link.URL, "https://app.notion.com/p/abc?pvs=204")
+		testutil.Equal(t, c.Link.Params, "id=ub9bei")
+	}
+	testutil.Equal(t, emu.CellAt(3, 0).Link.URL, "")
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/oscfilter"
 	"github.com/drn/argus/internal/tui/keyenc"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
@@ -352,9 +353,8 @@ func eventBytes(ev *tcell.EventKey) []byte {
 }
 
 // uvCellToTcellStyle converts an ultraviolet cell's style to a tcell.Style.
-// Covers fg/bg, the common SGR attributes, and underline styles. Mirrors
-// internal/tui/terminal/UvCellToTcellStyle without the OSC-8 hyperlink path
-// (plugin views are not link-clickable today).
+// Covers fg/bg, the common SGR attributes, underline styles, and OSC-8
+// hyperlinks — mirrors internal/tui/terminal/UvCellToTcellStyle.
 func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 	if cell == nil {
 		return tcell.StyleDefault
@@ -402,6 +402,13 @@ func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 			st = st.Underline(ulStyle, uvColorToTcell(cell.Style.UnderlineColor))
 		} else {
 			st = st.Underline(ulStyle)
+		}
+	}
+	// Hyperlinks (OSC 8): URL plus id, so a wrapped link stays one link.
+	if cell.Link.URL != "" {
+		st = st.Url(cell.Link.URL)
+		if id := oscfilter.HyperlinkID(cell.Link.Params); id != "" {
+			st = st.UrlId(id)
 		}
 	}
 	return st
