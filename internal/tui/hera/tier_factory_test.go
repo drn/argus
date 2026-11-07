@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -62,3 +63,52 @@ func TestHeraPage_TierResolverFactoryPrecedence(t *testing.T) {
 }
 
 func modelPtr(p *HeraPage) *heramodel.Model { m := p.Rail().Model(); return &m }
+
+// TestAsyncRefresh_TierFactoryRunsOncePerBackgroundBuild: on the off-thread tick
+// path the factory runs once per BUILD on the build goroutine (never on the UI
+// goroutine), its closure is only used by that build, and the annotated model is
+// what publishes. Run under -race: a closure memo shared across builds or touched
+// from the UI goroutine would trip it.
+func TestAsyncRefresh_TierFactoryRunsOncePerBackgroundBuild(t *testing.T) {
+	p, d, q := asyncPage(t)
+	orch := seedOrch(t, d, "alpha")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "w1", db.HeraKindWorker, "t-w1")
+	seedBoundRole(t, d, orch, "w2", db.HeraKindWorker, "t-w2")
+
+	var mu sync.Mutex
+	var builds, annotated, dones int
+	var closures []*int // one private counter per closure: proves no sharing across builds
+	p.SetTierResolverFactory(func() (func(*heramodel.RoleView), func()) {
+		mu.Lock()
+		builds++
+		mu.Unlock()
+		memo := new(int) // stands in for the per-build memo map
+		mu.Lock()
+		closures = append(closures, memo)
+		mu.Unlock()
+		return func(rv *heramodel.RoleView) {
+				*memo++ // unsynchronized on purpose: must stay goroutine-confined
+				mu.Lock()
+				annotated++
+				mu.Unlock()
+				rv.AppliedModel = "bg"
+			}, func() {
+				mu.Lock()
+				dones++
+				mu.Unlock()
+			}
+	})
+
+	buildAndPump(t, p, q) // build 1
+	buildAndPump(t, p, q) // build 2 (gate invalidated: a fresh build, a fresh closure)
+
+	mu.Lock()
+	defer mu.Unlock()
+	testutil.Equal(t, builds, 2)
+	testutil.Equal(t, dones, 2)
+	testutil.Equal(t, annotated, 6)
+	testutil.Equal(t, *closures[0], 3)
+	testutil.Equal(t, *closures[1], 3) // second build did not reuse the first's memo
+	testutil.Equal(t, roleByName(t, modelPtr(p), orch, "w1").AppliedModel, "bg")
+}
