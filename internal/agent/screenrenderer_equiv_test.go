@@ -85,32 +85,30 @@ func BenchmarkScreenRender_LegacyUncapped(b *testing.B) {
 	}
 }
 
-// TestScreenRender_RetainedHeapAfter100Renders logs live heap held by the
-// renderer after 100 tall renders, capped vs legacy (informational numbers
-// for the PR; the bound itself is asserted in the scrollback test).
-func TestScreenRender_RetainedHeapAfter100Renders(t *testing.T) {
+// TestScreenRender_RetainedHeapStaysBounded asserts the capped renderer's
+// retained heap stays small after many tall renders. The legacy uncapped
+// emulator retained ~260MB after 100 renders (see PR numbers); only the capped
+// side is asserted here so the test stays fast under -race. Heap deltas are
+// signed: a GC between the two readings can leave the heap SMALLER than the
+// baseline, which an unsigned subtraction turns into a huge bogus number.
+func TestScreenRender_RetainedHeapStaysBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("memory measurement")
 	}
 	tail := benchTail()
-	measure := func(render func([]byte, int, int) string) float64 {
-		var a, b runtime.MemStats
-		runtime.GC()
-		runtime.ReadMemStats(&a)
-		for i := 0; i < 100; i++ {
-			render(tail, 200, 50)
-		}
-		runtime.GC()
-		runtime.ReadMemStats(&b)
-		return float64(b.HeapAlloc-a.HeapAlloc) / 1e6
+	r := &ScreenRenderer{}
+	var a, b runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&a)
+	for i := 0; i < 30; i++ {
+		r.render(tail, 200, 50)
 	}
-	capped, legacy := &ScreenRenderer{}, &legacyRender{}
-	c := measure(capped.render)
-	l := measure(legacy.render)
-	t.Logf("retained heap after 100 renders: capped=%.1fMB legacy=%.1fMB", c, l)
-	if c > 20 {
-		t.Fatalf("capped renderer retains %.1fMB, want <= 20MB", c)
+	runtime.GC()
+	runtime.ReadMemStats(&b)
+	deltaMB := (float64(b.HeapAlloc) - float64(a.HeapAlloc)) / 1e6
+	t.Logf("retained heap after 30 renders: %.1fMB", deltaMB)
+	if deltaMB > 20 {
+		t.Fatalf("capped renderer retains %.1fMB, want <= 20MB", deltaMB)
 	}
-	runtime.KeepAlive(capped)
-	runtime.KeepAlive(legacy)
+	runtime.KeepAlive(r)
 }
