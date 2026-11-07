@@ -11,6 +11,31 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+func TestTailView_RealBytesAgreeWithIndependentCalls(t *testing.T) {
+	t.Parallel()
+	files, err := filepath.Glob("testdata/needsinput/*.bin")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(files) > 0, true)
+	for _, path := range files {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			buf, err := os.ReadFile(path)
+			testutil.NoError(t, err)
+			r := &agent.ScreenRenderer{}
+			v := agent.NewTailView(r, buf, 88, 48)
+			testutil.Equal(t, v.DetectNeedsInputScreen(), agent.DetectNeedsInputScreen(r, buf, 88, 48))
+			fp, ok := v.AwaitingInputFingerprint()
+			wantFP, wantOK := agent.AwaitingInputFingerprint(r, buf, 88, 48)
+			testutil.Equal(t, fp, wantFP)
+			testutil.Equal(t, ok, wantOK)
+			testutil.Equal(t, v.ParkedSelectionSignal(), agent.ParkedSelectionSignal(r, buf, 88, 48))
+			fp, working := v.ContentIdleFingerprint()
+			wantFP, wantWorking := agent.ContentIdleFingerprint(r, buf, 88, 48)
+			testutil.Equal(t, fp, wantFP)
+			testutil.Equal(t, working, wantWorking)
+		})
+	}
+}
+
 // TestDetectNeedsInputSticky_SettledClearDoesNotSwallowLaterPermissionPrompt
 // replays REAL captured Claude Code bytes (trimmed session-log slices under
 // testdata/needsinput) through the production TUI detector. Ground truth: a

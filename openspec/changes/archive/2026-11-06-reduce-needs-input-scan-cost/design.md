@@ -50,6 +50,7 @@ The comment on `reuseCached` describes the intended behaviour correctly ("compar
 **Non-goals (named follow-ups, not part of this work):**
 
 - **Moving the scan off the UI goroutine:** that is `move-needs-input-scan-off-ui-thread`.
+- **Hera rail rebuild stalls (`reduce-hera-rail-rebuild-stalls`):** the existing synchronous `HeraPage.doRefresh` rebuilds all roles, including 19 coordinator-board snapshots in the measured fleet, when the global `DataVersion` or runtime maps change. It still causes roughly 100ms UI-thread stalls. The coordinator owns this named follow-up; do not fix it in this PR.
 - **The daemon's scan:** `computeNeedsInput` has the same redundancy, but runs off the UI on a 5-second tick. The daemon has no pprof listener, so its CPU can't be broken down.
 - **Archived sessions in `ContentIdle`:** classifying them less often would change results, so only the render sharing applies here.
 - **TUI memory:** 3.9 GB RSS after 4 days, about 1 GB of heap in `Scrollback.Push`, and 75 goroutines blocked in `Emulator.Read`. Possibly another leak like #959/#963; unconfirmed.
@@ -100,6 +101,8 @@ When a session isn't due, its previous stat is copied into `newLogStat`. This do
 `autoClearBlockedHeraRoles` runs straight after the scan. For a task with a `needsInputRawSignals` entry where `hasTail` is true, it uses that `working` value. Otherwise (archived, or not in the scan) it computes as today.
 
 ## Measurement
+
+**Coordinator acceptance, 2026-11-06 (message 21553):** four audited CPU captures plus the existing UX-log tick/typing analysis below were accepted for this PR instead of requesting additional live stall/typing sessions. Tick logging is unchanged and censored below 16ms; sparse typing records are explicitly not claimed as a latency win. Full evidence is in `measurements.md`. The remaining roughly 100ms stalls were traced to the unchanged Hera rail/board rebuild and named as a separate follow-up above.
 
 Before merging, the worker builds a binary from this branch outside the repository and hands the path to the coordinator. Aaron relaunches with it and picks Skip on the skew modal, as in "Before capture" in `repaint-panes-on-output/design.md`. Nothing is deployed. The worker then repeats "Capture window" and "Reading results back" from that document, using the same `argus-latency` commands.
 
