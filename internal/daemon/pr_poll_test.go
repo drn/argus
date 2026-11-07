@@ -790,3 +790,58 @@ func TestPollPR_CoordinatorsOwnMergedPRGetsNoNotificationEitherWay(t *testing.T)
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(msgs), 0)
 }
+
+// An unchanged poll result must not be rewritten: every no-op commit bumped
+// data_version and forced the Hera rail to rebuild once per task per minute
+// (reduce-hera-rail-rebuild-stalls). updated_at is the observable proof — the
+// old SetMetaBatch always advanced it.
+func TestPollPR_UnchangedResultIsNotRewritten(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "quiet", "argus/quiet", false)
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for b := range branches {
+			out[b] = gitutil.PRResult{State: model.PRNone}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = resolveAll("drn/argus")
+
+	d.pollPRStatesOnce(context.Background())
+	first, err := d.db.ListMeta("quiet", "pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(first), 2)
+
+	time.Sleep(3 * time.Millisecond)
+	d.pollPRStatesOnce(context.Background())
+	second, err := d.db.ListMeta("quiet", "pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(second), 2)
+	for i := range first {
+		testutil.Equal(t, second[i].Value, first[i].Value)
+		testutil.Equal(t, second[i].UpdatedAt, first[i].UpdatedAt)
+	}
+}
+
+func TestPollPR_ChangedResultIsStillWritten(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "flip", "argus/flip", false)
+	state := model.PRNone
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for b := range branches {
+			out[b] = gitutil.PRResult{State: state, URL: "https://example/pr/9"}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = resolveAll("drn/argus")
+
+	d.pollPRStatesOnce(context.Background())
+	state = model.PRAwaitingReview
+	time.Sleep(3 * time.Millisecond)
+	d.pollPRStatesOnce(context.Background())
+
+	meta, err := d.db.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, meta["flip"]["state"], model.PRAwaitingReview.String())
+}
