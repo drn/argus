@@ -392,6 +392,10 @@ type ScreenRenderer struct {
 
 // RenderCount reports actual emulator renders for scan cost diagnostics.
 // Like render, it must only be called by the renderer's owning goroutine.
+// screenScrapeScrollback is the scrollback cap for emulators that only
+// reconstruct the visible screen as text (x/vt requires a cap >= 1).
+const screenScrapeScrollback = 1
+
 func (r *ScreenRenderer) RenderCount() uint64 { return r.renders }
 
 // render writes tail through the emulator sized to cols×rows and returns the
@@ -408,7 +412,12 @@ func (r *ScreenRenderer) render(tail []byte, cols, rows int) string {
 	}
 	if r.emu == nil {
 		r.emu = xvt.NewSafeEmulator(cols, rows)
+		// Only the visible screen is ever read (emu.String()), so keep no
+		// scrollback: RIS does not clear it, and x/vt's 10K-line default
+		// otherwise fills to ~26KB/line across every tick.
+		r.emu.Emulator.SetScrollbackSize(screenScrapeScrollback)
 		r.cols, r.rows = cols, rows
+		uxlog.Log("[screenrenderer] emulator created (%dx%d)", cols, rows)
 		// One drain goroutine for the renderer's lifetime: x/vt writes query
 		// responses (DA/DSR/cursor-position) to an internal io.Pipe that blocks
 		// Write until read — Claude's output stream contains such queries.
@@ -417,6 +426,7 @@ func (r *ScreenRenderer) render(tail []byte, cols, rows int) string {
 		// Reset to a clean blank screen, then re-size if this session differs
 		// from the last one rendered (RIS preserves dimensions).
 		safeEmuWrite(r.emu, risReset)
+		r.emu.ClearScrollback()
 		if cols != r.cols || rows != r.rows {
 			r.emu.Resize(cols, rows)
 			r.cols, r.rows = cols, rows
