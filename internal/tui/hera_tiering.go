@@ -2,14 +2,17 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/tui/hera"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // hera_tiering.go is the App side of the plan-view diligence-tiering readout
@@ -21,85 +24,188 @@ import (
 // node and a ⚠ warning when a project explicitly points at a missing/invalid
 // profile (the runtime fail-open surfacing).
 
-// resolveHeraTier fills in a role's diligence-tiering readout for the plan view.
-// It is the SetTierResolver closure (local mode). The archetype is already on the
-// role (no I/O); this adds the applied model/effort (via agent.ResolveModel, which
-// honors a task.Model override + backend validation) and a warning when the
-// project's EXPLICIT profile binding is missing or invalid. An unbound project
-// falling back to an absent "default" is silent fail-open — never a warning (it is
-// not a profile the operator pointed at).
+// resolveHeraTier annotates ONE role in isolation. It is a thin wrapper over a
+// single-use build closure, kept for callers/tests that resolve a lone role; the
+// rail refresh uses heraTierResolverForBuild directly so the work below is shared
+// across every role of a build (hera-tier-resolve-once).
 func (a *App) resolveHeraTier(rv *hera.RoleView) {
-	if rv == nil {
-		return
+	annotate, _ := a.heraTierResolverForBuild()
+	annotate(rv)
+}
+
+// heraTierValidate loads and validates a named profile. A package var only so
+// tests can count loads; production always uses Loader.ValidateName. panelValidator
+// is nil: the plan-view readout only consults archetype/rigor fields, so
+// panel-grammar enforcement is left to the daemon-side consumers.
+var heraTierValidate = func(l *profiles.Loader, name string, cfg config.Config) (*profiles.Profile, []error) {
+	return l.ValidateName(name, cfg, agent.KnownModels, nil)
+}
+
+// tierProfileKey identifies a profile load: the name plus the in-repo directory
+// (empty when the worktree has none, so most roles share one entry).
+type tierProfileKey struct{ name, repoDir string }
+
+type tierProfileEntry struct {
+	prof *profiles.Profile
+	ok   bool
+}
+
+// tierModelKey is every input to the applied-model resolution below that can
+// differ between roles. Two roles with equal keys resolve identically.
+//
+// It includes the readout role's own archetype and tiering-profile key (pk): the
+// no-backend fallback path reads prof.Archetype[rv.Archetype], and a bound task's
+// archetype/project may differ from the role's.
+type tierModelKey struct {
+	model, profile, backend, account, project, archetype, repoDir string
+	roleArchetype                                                 string
+	prof                                                          tierProfileKey
+}
+
+// tierRepoDir returns the in-repo profile directory for a worktree, or "" when
+// the worktree has none. An absent directory behaves exactly like RepoDir==""
+// (Loader.locate would stat a missing file), so collapsing it lets every role
+// without one share a memo entry for one os.Stat instead of several plus a decode.
+func tierRepoDir(worktree string) string {
+	if worktree == "" {
+		return ""
 	}
+	dir := filepath.Join(worktree, ".argus", "profiles")
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return ""
+	}
+	return dir
+}
+
+// heraTierResolverForBuild returns the per-role annotation closure for ONE model
+// build. It snapshots Config() once and memoizes profile validation and applied-
+// model resolution for the lifetime of the closure only — nothing outlives the
+// build, so settings, project bindings and profile files are re-read on the next
+// build (no cache to invalidate, no staleness window) and the closure is
+// goroutine-confined to the build that created it (race-free off the UI thread).
+//
+// Per role it stamps the applied model/effort (via agent.ResolveModel, which
+// honors a task.Model override + backend validation), a warning when the
+// project's EXPLICIT profile binding is missing or invalid, and ContextPercent.
+// An unbound project falling back to an absent "default" is silent fail-open —
+// never a warning (it is not a profile the operator pointed at).
+func (a *App) heraTierResolverForBuild() (annotate func(*hera.RoleView), done func()) {
 	cfg := a.db.Config()
-
-	// Unconditional, regardless of archetype/profile — ContextPercent has
-	// nothing to do with diligence tiering, it just needs cfg (rail-context-
-	// high). Computed here rather than in buildRoleView because cfg is only
-	// available in local mode; rail.go's contextIndicator, not this function,
-	// is what excludes coordinators from ever rendering the indicator.
-	//
-	// The denominator is kind-dependent: CoordinatorContextBudget (200000) is
-	// a coordinator-specific recycle-nudge POLICY threshold, deliberately set
-	// well below a coordinator's real context window so it has room to wrap up
-	// gracefully — it is not a context window size, and reusing it for a
-	// worker/freelance role would make the indicator's 40/65/90 tiers fire at
-	// 80k/130k/180k tokens instead of the intended 400k/650k/900k against a
-	// worker's actual (much larger) context window.
-	budget := cfg.Hera.CoordinatorContextBudget
-	if rv.Kind != db.HeraKindCoordinator {
-		budget = cfg.Hera.WorkerContextWindow
-	}
-	rv.ContextPercent = contextPercent(rv.ContextSize, budget)
-
-	explicit := ""
-	if rv.ArgusProject != "" {
-		if p, ok := cfg.Projects[rv.ArgusProject]; ok {
-			explicit = strings.TrimSpace(p.Profile)
+	libraryDir := filepath.Join(db.DataDir(), "profiles")
+	profMemo := map[tierProfileKey]tierProfileEntry{}
+	modelMemo := map[tierModelKey]string{}
+	// One os.Stat per distinct worktree per build, not per lookup.
+	repoDirMemo := map[string]string{}
+	repoDirOf := func(wt string) string {
+		if d, ok := repoDirMemo[wt]; ok {
+			return d
 		}
+		d := tierRepoDir(wt)
+		repoDirMemo[wt] = d
+		return d
 	}
-	name := explicit
-	if name == "" {
-		name = "default"
-	}
-
-	loader := &profiles.Loader{LibraryDir: filepath.Join(db.DataDir(), "profiles")}
-	if rv.WorktreePath != "" {
-		loader.RepoDir = filepath.Join(rv.WorktreePath, ".argus", "profiles")
-	}
-	// panelValidator is nil: the plan-view tiering readout only consults
-	// archetype/rigor fields, so panel-grammar enforcement is left to the
-	// daemon-side consumers (spawn-time resolution, profile_resolve).
-	prof, errs := loader.ValidateName(name, cfg, agent.KnownModels, nil)
-	if prof == nil || len(errs) > 0 {
-		// Only surface a warning for an EXPLICIT binding; an unbound project that
-		// falls back to a missing "default" is the silent fail-open case.
-		if explicit != "" {
-			rv.ProfileWarning = fmt.Sprintf("profile %q missing or invalid", name)
+	var calls, profHits, profMisses, modelHits, modelMisses int
+	annotate = func(rv *hera.RoleView) {
+		if rv == nil {
+			return
 		}
-		return
-	}
-	if rv.Archetype == "" {
-		return // no archetype → no profile consult → no model readout
-	}
+		calls++
 
-	rv.AppliedEffort = strings.TrimSpace(prof.Archetype[rv.Archetype].Effort)
+		// Unconditional, regardless of archetype/profile — ContextPercent has
+		// nothing to do with diligence tiering, it just needs cfg (rail-context-
+		// high). rail.go's contextIndicator, not this function, is what excludes
+		// coordinators from ever rendering the indicator.
+		//
+		// The denominator is kind-dependent: CoordinatorContextBudget (200000) is
+		// a coordinator-specific recycle-nudge POLICY threshold, deliberately set
+		// well below a coordinator's real context window so it has room to wrap up
+		// gracefully — it is not a context window size, and reusing it for a
+		// worker/freelance role would make the indicator's 40/65/90 tiers fire at
+		// 80k/130k/180k tokens instead of the intended 400k/650k/900k against a
+		// worker's actual (much larger) context window.
+		budget := cfg.Hera.CoordinatorContextBudget
+		if rv.Kind != db.HeraKindCoordinator {
+			budget = cfg.Hera.WorkerContextWindow
+		}
+		rv.ContextPercent = contextPercent(rv.ContextSize, budget)
 
-	t := a.heraTierTask(rv)
+		explicit := ""
+		if rv.ArgusProject != "" {
+			if p, ok := cfg.Projects[rv.ArgusProject]; ok {
+				explicit = strings.TrimSpace(p.Profile)
+			}
+		}
+		name := explicit
+		if name == "" {
+			name = "default"
+		}
+
+		repoDir := repoDirOf(rv.WorktreePath)
+		pk := tierProfileKey{name: name, repoDir: repoDir}
+		entry, seen := profMemo[pk]
+		if seen {
+			profHits++
+		} else {
+			profMisses++
+			loader := &profiles.Loader{LibraryDir: libraryDir, RepoDir: repoDir}
+			uxlog.Log("[hera-tier] profile load name=%q repoDir=%q", name, repoDir)
+			prof, errs := heraTierValidate(loader, name, cfg)
+			entry = tierProfileEntry{prof: prof, ok: prof != nil && len(errs) == 0}
+			profMemo[pk] = entry
+		}
+		if !entry.ok {
+			// Only surface a warning for an EXPLICIT binding; an unbound project that
+			// falls back to a missing "default" is the silent fail-open case.
+			if explicit != "" {
+				rv.ProfileWarning = fmt.Sprintf("profile %q missing or invalid", name)
+			}
+			return
+		}
+		if rv.Archetype == "" {
+			return // no archetype → no profile consult → no model readout
+		}
+		prof := entry.prof
+
+		rv.AppliedEffort = strings.TrimSpace(prof.Archetype[rv.Archetype].Effort)
+
+		t := a.heraTierTask(rv)
+		mk := tierModelKey{
+			model: t.Model, profile: t.Profile, backend: t.Backend, account: t.Account,
+			project: t.Project, archetype: t.Archetype, repoDir: repoDirOf(t.Worktree),
+			roleArchetype: rv.Archetype, prof: pk,
+		}
+		if applied, ok := modelMemo[mk]; ok {
+			modelHits++
+			rv.AppliedModel = applied
+			return
+		}
+		modelMisses++
+		rv.AppliedModel = tierAppliedModel(t, rv.Archetype, prof, cfg)
+		modelMemo[mk] = rv.AppliedModel
+	}
+	// done logs one summary line per build (never one per role): memo hits are the
+	// work this change removes; misses are the loads that still happened.
+	done = func() {
+		uxlog.Log("[hera-tier] build: roles=%d profile hits=%d misses=%d model hits=%d misses=%d (1 config snapshot)",
+			calls, profHits, profMisses, modelHits, modelMisses)
+	}
+	return annotate, done
+}
+
+// tierAppliedModel resolves a task's applied model for the readout: the backend's
+// ResolveModel result, or — when no backend resolves — the profile's declared
+// choice for the task's requested/default backend as intent.
+func tierAppliedModel(t *model.Task, archetype string, prof *profiles.Profile, cfg config.Config) string {
 	backend, err := agent.ResolveBackend(t, cfg)
 	if err != nil {
-		// Can't resolve a backend → show the profile's declared choice for the
-		// task's requested/default backend as intent.
 		backendName := t.Backend
 		if backendName == "" {
 			backendName = cfg.Defaults.Backend
 		}
-		rv.AppliedModel = strings.TrimSpace(prof.Archetype[rv.Archetype].Models[backendName])
-		return
+		return strings.TrimSpace(prof.Archetype[archetype].Models[backendName])
 	}
 	applied, _ := agent.ResolveModel(t, backend, cfg)
-	rv.AppliedModel = applied
+	return applied
 }
 
 // contextPercent converts a raw context_size token count into a 0-100

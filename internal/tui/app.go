@@ -1037,7 +1037,7 @@ func (a *App) buildUI() {
 		// doRefresh. Local-only — resolution reads disk + the task row, which is
 		// inert/expensive over the remote apistore, so remote leaves it nil (the
 		// plan view then shows archetype only).
-		a.heraPage.SetTierResolver(a.resolveHeraTier)
+		a.heraPage.SetTierResolverFactory(a.heraTierResolverForBuild)
 	}
 	if heraReader != nil {
 		// In-process runner feed seam (replaces Hera's proxy/ SSE fan-out). Read
