@@ -4,7 +4,7 @@
 
 Evidence (this session, real data):
 
-- **Writer.** A read-only watcher on `~/.argus/data.sql` diffed tables on every `data_version` bump. Every minute at about :43–:46 there are 5–8 bumps 0.4–0.6s apart, each a `task_meta` `pr/state`+`pr/url` rewrite. This is the daemon PR poller (`prPollInterval` = 60s, batched per repo group). Most rows rewrite `none`/`''` with only `updated_at` changed. A `config` row is also rewritten every 30s, and `events`/`api_tokens`/`plugin_mcp_tools` bump occasionally. PR 2's ux.log shows fingerprint 33→38 then 38→41 with 3 rebuilds each, matching.
+- **Writer.** A read-only watcher on `~/.argus/data.sql` diffed tables on every `data_version` bump. Every minute at about :43–:46 there are 5–8 bumps 0.4–0.6s apart, each a `task_meta` `pr/state`+`pr/url` rewrite. This is the daemon PR poller (`prPollInterval` = 60s): `daemon.go` loops every task of every polled branch and calls `SetMetaBatch` once per TASK, an unconditional upsert that always rewrites `updated_at`. Most rows rewrite `none`/`''` with only `updated_at` changed. A `config` row is also rewritten every 30s, and `events`/`api_tokens`/`plugin_mcp_tools` bump occasionally. PR 2's ux.log shows fingerprint 33→38 then 38→41 with 3 rebuilds each, matching.
 - **Cost.** `BenchmarkRealBuildModel` against a copy of the real DB: 87.5ms/op. pprof: 80% in `SumNukedHeraRolesCostByOrchestrator` (45%) and `SumHeraRoleCostAccruedByOrchestrator` (35%), almost all SQLite page reads. `EXPLAIN QUERY PLAN` shows `SCAN hb` for both: `hera_bindings` has only partial indexes on `role_id` (`WHERE ended_at IS NULL`), which cannot serve ended bindings. 412 orchestrators × 2837 wide rows. Adding `CREATE INDEX ON hera_bindings(role_id)` gives 12.2ms/op (no `ANALYZE`).
 
 ## Goals / Non-Goals
@@ -17,7 +17,6 @@ Evidence (this session, real data):
 
 **Non-Goals:**
 
-- Skipping no-op `pr/state` rewrites in the daemon PR poller. It would also cut `data_version` churn for every TUI view, but it is a separate daemon change. Named follow-up.
 - Batching or caching board reads, or rewriting `BuildModel`'s query shape. After the index it is 12ms and off-thread.
 - Other tabs' refresh paths (task list reads), already gated by `add-tasks-fetch-dirty-check`.
 
@@ -35,11 +34,15 @@ Evidence (this session, real data):
 
 **D6. Test seam.** The page gets a `queueUpdate func(func())` (App wires `tapp.QueueUpdateDraw`). When unset (unit tests, bare `New()`), the async path degrades to today's synchronous inline behaviour, same convention as the other tview seams.
 
+**D7. The PR poller skips no-op writes at the DB layer.** `db.SetMetaBatchIfChanged(taskID, ns, entries)` runs inside one `WithTx`: it reads the existing value of each key and commits nothing (the transaction rolls back or never writes) when every key already equals the new value; otherwise it upserts all keys exactly like `SetMetaBatch`. It reports whether it wrote. The comparison happens in the same transaction as the write, so there is no stale cached read (rejected: comparing against the poller's start-of-cycle `ListMetaByNamespace` snapshot, which races a concurrent writer). Only the poller call site switches; `res.Merged` notifications stay outside the skip. Nothing reads `updated_at` of the `pr` namespace (cadence derives from task lifecycle timestamps; `ListMetaByNamespace` drops it), so the only visible effect is a stale `updated_at` from `GET /api/tasks/{id}/meta` for an unchanged row. D5 stays as defence in depth: other writers (`config`, `events`) still bump `data_version`.
+
 ## Risks / Trade-offs
 
 - [Rail lags a write by one build, about 12ms plus a tick] → Forced paths stay synchronous; ticks were already up to 1s granular.
 - [Stale publish applies old data after a mutation] → D4 generation guard plus a stale-publish test.
 - [Background reads contend on the DB mutex with UI reads] → each query holds the mutex briefly; after D1 the longest hold is milliseconds, versus 88ms of back-to-back holds today.
+- [`updated_at` of an unchanged `pr` row no longer advances] → nothing consumes it for `pr`; documented in the spec.
+- [DeepEqual silently never matches because a volatile field enters the model] → D5 test built from real commits asserts equality for a no-op poller commit and for an old-style identical rewrite, and inequality for a real state flip.
 - [DeepEqual cost] → proportional to model size (hundreds of rows), on the background goroutine, only when the gate fired.
 - [Cursor/sticky-reveal semantics drift] → the publish path calls the unchanged `SetModel`+`applySelection`; existing BUG-069/070/071 tests run against it, plus a test publishing an unchanged model asserts no `SetModel`.
 
