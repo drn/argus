@@ -5,7 +5,7 @@
 Evidence (this session, real data):
 
 - **Writer.** A read-only watcher on `~/.argus/data.sql` diffed tables on every `data_version` bump. Every minute at about :43–:46 there are 5–8 bumps 0.4–0.6s apart, each a `task_meta` `pr/state`+`pr/url` rewrite. This is the daemon PR poller (`prPollInterval` = 60s): `daemon.go` loops every task of every polled branch and calls `SetMetaBatch` once per TASK, an unconditional upsert that always rewrites `updated_at`. Most rows rewrite `none`/`''` with only `updated_at` changed. A `config` row is also rewritten every 30s, and `events`/`api_tokens`/`plugin_mcp_tools` bump occasionally. PR 2's ux.log shows fingerprint 33→38 then 38→41 with 3 rebuilds each, matching.
-- **Cost.** `BenchmarkRealBuildModel` against a copy of the real DB: 87.5ms/op. pprof: 80% in `SumNukedHeraRolesCostByOrchestrator` (45%) and `SumHeraRoleCostAccruedByOrchestrator` (35%), almost all SQLite page reads. `EXPLAIN QUERY PLAN` shows `SCAN hb` for both: `hera_bindings` has only partial indexes on `role_id` (`WHERE ended_at IS NULL`), which cannot serve ended bindings. 412 orchestrators × 2837 wide rows. Adding `CREATE INDEX ON hera_bindings(role_id)` gives 12.2ms/op (no `ANALYZE`).
+- **Cost.** `BenchmarkRealBuildModel` against a copy of the real DB: 87.5ms/op. pprof: 80% in `SumNukedHeraRolesCostByOrchestrator` (45%) and `SumHeraRoleCostAccruedByOrchestrator` (35%), almost all SQLite page reads. `EXPLAIN QUERY PLAN` shows `SCAN hb` for both: `hera_bindings` has only partial indexes on `role_id` (`WHERE ended_at IS NULL`), which cannot serve ended bindings. 412 orchestrators × 2837 wide rows. Adding `CREATE INDEX ON hera_bindings(role_id)` gives 12.2ms/op for `BuildModel` (no `ANALYZE`); with the App's tier annotation on top it is about 40ms/op.
 
 ## Goals / Non-Goals
 
@@ -17,6 +17,7 @@ Evidence (this session, real data):
 
 **Non-Goals:**
 
+- Per-role tier annotation cost. After D1, `BuildModel` + `AnnotateRoles` is about 40ms on the real data: about 13ms projection and about 27ms in `resolveHeraTier`, which calls `db.Config()` and loads profiles from disk once per role. It now runs on the build goroutine, and with D5/D7 rebuilds are rare, so it is left alone. Named follow-up: resolve the config and each distinct profile once per build instead of once per role.
 - Batching or caching board reads, or rewriting `BuildModel`'s query shape. After the index it is 12ms and off-thread.
 - Other tabs' refresh paths (task list reads), already gated by `add-tasks-fetch-dirty-check`.
 
