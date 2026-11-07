@@ -35,6 +35,7 @@ func cpuTime(t *testing.T) time.Duration {
 
 type workloadResult struct {
 	frames       int
+	drawBusy     time.Duration // wall time inside the pump's draw (the UI goroutine's work)
 	cpu          time.Duration
 	echoMs       []float64
 	finalPainted bool
@@ -55,13 +56,19 @@ func runWorkload(t *testing.T) workloadResult {
 	var mu sync.Mutex
 	var frames int
 	var drawnAt []time.Time
+	var drawBusy time.Duration
+	drawn := make(chan struct{}) // closed and replaced on every completed draw
 	a.startOutputRepaint()
 	draw := a.repaint.draw
 	a.repaint.draw = func() {
+		begin := time.Now()
 		draw()
 		mu.Lock()
 		frames++
+		drawBusy += time.Since(begin)
 		drawnAt = append(drawnAt, time.Now())
+		close(drawn)
+		drawn = make(chan struct{})
 		mu.Unlock()
 	}
 	stop := runApp(t, tapp)
@@ -73,7 +80,7 @@ func runWorkload(t *testing.T) workloadResult {
 	}()
 	time.Sleep(200 * time.Millisecond) // subscription settles
 	mu.Lock()
-	frames, drawnAt = 0, nil
+	frames, drawnAt, drawBusy = 0, nil, 0
 	mu.Unlock()
 
 	var res workloadResult
@@ -84,10 +91,10 @@ func runWorkload(t *testing.T) workloadResult {
 	for i := 0; time.Since(start) < workloadSeconds*time.Second; i++ {
 		sess.emit([]byte(fmt.Sprintf("%05d %s\r\n", i, line)))
 		if i > 0 && i%(workloadWrites/2) == 0 { // a keystroke echo every ~500ms mid-stream
-			noteWorkloadKey(a)
+			a.repaint.noteKey() // the keystroke reaching handleGlobalKey
 			emitted := time.Now()
 			sess.emit([]byte("ECHO"))
-			res.echoMs = append(res.echoMs, waitDrawAfter(&mu, &drawnAt, emitted))
+			res.echoMs = append(res.echoMs, waitDrawAfter(&mu, &drawnAt, &drawn, emitted))
 		}
 		next = next.Add(time.Second / workloadWrites)
 		time.Sleep(time.Until(next))
@@ -96,7 +103,7 @@ func runWorkload(t *testing.T) workloadResult {
 	// No frame may be lost at the end of a burst: the last byte must paint.
 	sess.emit([]byte("FINAL-MARKER"))
 	last := time.Now()
-	waitDrawAfter(&mu, &drawnAt, last)
+	waitDrawAfter(&mu, &drawnAt, &drawn, last)
 	var b strings.Builder
 	readUI(t, tapp, func() {
 		cells, w, _ := sim.GetContents()
@@ -112,14 +119,16 @@ func runWorkload(t *testing.T) workloadResult {
 	res.finalPainted = strings.Contains(b.String(), "FINAL-MARKER")
 	mu.Lock()
 	res.frames = frames
+	res.drawBusy = drawBusy
 	mu.Unlock()
 	return res
 }
 
-// waitDrawAfter returns ms from `since` until the first completed draw after it.
-func waitDrawAfter(mu *sync.Mutex, drawnAt *[]time.Time, since time.Time) float64 {
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+// waitDrawAfter returns ms from `since` until the first completed draw after
+// it, blocking on the draw notification rather than polling.
+func waitDrawAfter(mu *sync.Mutex, drawnAt *[]time.Time, drawn *chan struct{}, since time.Time) float64 {
+	deadline := time.After(2 * time.Second)
+	for {
 		mu.Lock()
 		for _, d := range *drawnAt {
 			if d.After(since) {
@@ -127,10 +136,14 @@ func waitDrawAfter(mu *sync.Mutex, drawnAt *[]time.Time, since time.Time) float6
 				return float64(d.Sub(since)) / float64(time.Millisecond)
 			}
 		}
+		ch := *drawn
 		mu.Unlock()
-		time.Sleep(time.Millisecond)
+		select {
+		case <-ch:
+		case <-deadline:
+			return -1
+		}
 	}
-	return -1
 }
 
 func TestWorkload_OutputRepaintRate(t *testing.T) {
@@ -138,14 +151,15 @@ func TestWorkload_OutputRepaintRate(t *testing.T) {
 		t.Skip("set ARGUS_PAINT_WORKLOAD=1 to run the repaint workload")
 	}
 	var runs []workloadResult
-	for range 3 {
+	for range 5 {
 		runs = append(runs, runWorkload(t))
 	}
 	for i, r := range runs {
 		echo := slices.Clone(r.echoMs)
 		slices.Sort(echo)
-		t.Logf("run %d: frames=%d (%.1f fps) cpu=%.0fms (%.1f%% of one core) echo_ms=%v final_painted=%v",
-			i, r.frames, float64(r.frames)/workloadSeconds, float64(r.cpu)/float64(time.Millisecond),
+		t.Logf("run %d: frames=%d (%.1f fps) draw_busy=%.1f%% cpu=%.1f%% of one core echo_ms=%v final_painted=%v",
+			i, r.frames, float64(r.frames)/workloadSeconds,
+			100*float64(r.drawBusy)/float64(workloadSeconds*time.Second),
 			100*float64(r.cpu)/float64(workloadSeconds*time.Second), echo, r.finalPainted)
 		testutil.Equal(t, r.finalPainted, true)
 	}

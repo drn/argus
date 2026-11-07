@@ -231,6 +231,10 @@ type cachedCell struct {
 // No activeInputBG or findInputRow — the native surface shows upstream
 // PTY output without Argus-injected highlights.
 type TerminalPane struct {
+	// OnUserInput, when set before the UI loop starts, is called on the UI
+	// goroutine when the pane forwards a bracketed paste to a live session
+	// (pastes bypass the app's key capture). It must not block.
+	OnUserInput func()
 	// Frame observations are owned by the UI goroutine and consumed afterDraw.
 	painted      bool
 	paintedTotal uint64
@@ -1686,6 +1690,9 @@ func (tp *TerminalPane) PasteHandler() func(pastedText string, setFocus func(p t
 			// pasted text echoes on screen instead of off the bottom of a
 			// scrolled-up viewport. Anchor-lock (output growth) is untouched.
 			tp.ResetScroll()
+			if tp.OnUserInput != nil {
+				tp.OnUserInput() // bracketed paste never reaches the app's key capture
+			}
 			// Write the entire paste as a single PTY write, wrapped in
 			// bracket paste sequences so the agent's readline sees it as
 			// a paste (no per-character echo/processing).
