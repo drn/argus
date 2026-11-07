@@ -42,6 +42,12 @@ func TestSmoke_HeraAsyncRefreshPublishesThroughRealEventLoop(t *testing.T) {
 	for time.Now().Before(deadline) {
 		readUI(t, app.tapp, func() { got = app.heraPage.Rail().Model().Active })
 		if len(got) == 2 {
+			// It must have gone through the BACKGROUND path, not the inline one:
+			// without this the test passes identically with async switched off.
+			var builds, published int
+			readUI(t, app.tapp, func() { builds, published = app.heraPage.AsyncStats() })
+			testutil.Equal(t, builds >= 1, true)
+			testutil.Equal(t, published >= 1, true)
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -56,7 +62,13 @@ func TestResolveHeraTier_SafeOffTheUIGoroutine(t *testing.T) {
 	seedHeraBoundRole(t, d, seedHeraOrch(t, d, "o"), "w", db.HeraKindWorker, "tw")
 	app := New(d, agent.NewRunner(nil), false)
 
+	// Reference stamp, computed single-threaded.
+	want := &hera.RoleView{TaskID: "tw", ArgusProject: "p", Archetype: "code_slice"}
+	app.resolveHeraTier(want)
+
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var mismatched int
 	for g := 0; g < 8; g++ {
 		wg.Add(1)
 		go func() {
@@ -64,6 +76,12 @@ func TestResolveHeraTier_SafeOffTheUIGoroutine(t *testing.T) {
 			for i := 0; i < 20; i++ {
 				rv := &hera.RoleView{TaskID: "tw", ArgusProject: "p", Archetype: "code_slice"}
 				app.resolveHeraTier(rv)
+				if rv.AppliedModel != want.AppliedModel || rv.AppliedEffort != want.AppliedEffort ||
+					rv.ProfileWarning != want.ProfileWarning || rv.ContextPercent != want.ContextPercent {
+					mu.Lock()
+					mismatched++
+					mu.Unlock()
+				}
 			}
 		}()
 	}
@@ -76,4 +94,14 @@ func TestResolveHeraTier_SafeOffTheUIGoroutine(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+	testutil.Equal(t, mismatched, 0) // concurrent callers stamp the same readout
+}
+
+// prepareRun is what Run() calls right before the event loop starts. If it ever
+// stops enabling the off-thread rebuild, the whole fix is silently off.
+func TestPrepareRun_EnablesAsyncHeraRefresh(t *testing.T) {
+	app := New(testDB(t), agent.NewRunner(nil), false)
+	testutil.Equal(t, app.heraPage.AsyncEnabled(), false) // a bare App stays inline
+	app.prepareRun()
+	testutil.Equal(t, app.heraPage.AsyncEnabled(), true)
 }

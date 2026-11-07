@@ -1624,9 +1624,7 @@ func (a *App) Run() error {
 	// with the previous build's config, restart when convenient" — so it takes
 	// the transient status-bar notice instead of a modal (design D6). This is the
 	// nine-times-in-ten false alarm the surface version exists to remove.
-	a.applyStartupSkew()
-	a.restoreLastTab()
-	a.enableAsyncHeraRefresh()
+	a.prepareRun()
 
 	uxlog.Log("[tui] starting tcell/tview application")
 	return a.tapp.Run()
@@ -5174,6 +5172,16 @@ func (a *App) openPR() {
 // (Ctrl/Shift/Alt+arrow) that the prior pane encoders dropped.
 func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 	return keyenc.Encode(ev)
+}
+
+// prepareRun is the pre-event-loop window: the only time state may be mutated
+// directly because no Draw goroutine exists yet. Split out of Run() so a test
+// can pin that every step (notably enableAsyncHeraRefresh, whose absence would
+// silently turn the whole off-thread rebuild off) is actually wired.
+func (a *App) prepareRun() {
+	a.applyStartupSkew()
+	a.restoreLastTab()
+	a.enableAsyncHeraRefresh()
 }
 
 // enableAsyncHeraRefresh lets the Hera rail build its tick-driven model off the

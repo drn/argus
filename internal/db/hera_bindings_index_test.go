@@ -65,3 +65,29 @@ func TestHeraBindingsRoleIndex_IsNotPartial(t *testing.T) {
 		t.Fatalf("index must not be partial: %s", sqlText)
 	}
 }
+
+// A database created before this change has no such index; opening it must add
+// it (CREATE INDEX IF NOT EXISTS) without disturbing existing rows.
+func TestHeraBindingsRoleIndex_AddedToExistingDatabase(t *testing.T) {
+	path := t.TempDir() + "/data.sql"
+	d, err := Open(path)
+	testutil.NoError(t, err)
+	o := mkOrch(t, d, "orch")
+	r := mkRole(t, d, o.ID, "w", HeraKindWorker)
+	mkBinding(t, d, r.ID, "task-1", "/tmp/task-1")
+	_, err = d.conn.Exec(`DROP INDEX idx_hera_bindings_role`) // simulate the pre-change database
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.Close())
+
+	d2, err := Open(path)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d2.Close() })
+
+	var n int
+	testutil.NoError(t, d2.conn.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_hera_bindings_role'`).Scan(&n))
+	testutil.Equal(t, n, 1)
+	var rows int
+	testutil.NoError(t, d2.conn.QueryRow(`SELECT count(*) FROM hera_bindings`).Scan(&rows))
+	testutil.Equal(t, rows, 1)
+}

@@ -2,6 +2,7 @@ package hera
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 var errBuildForTest = errors.New("boom")
@@ -271,6 +273,13 @@ func TestAsyncRefresh_ForcedRefreshIsSynchronousAndBumpsGeneration(t *testing.T)
 	testutil.Equal(t, q.pending(), 0)
 	testutil.Equal(t, p.gen > before, true)
 	testutil.Equal(t, p.asyncStats.builds, 0) // it never used the async path
+
+	// Refresh must not leave the page stuck in synchronous mode: the next
+	// tick-driven opportunity goes back to the background path.
+	p.InvalidateChangeGate()
+	p.doRefresh()
+	testutil.Equal(t, p.asyncStats.builds, 1)
+	q.pump(t)
 }
 
 // --- D3: writes during a build are never lost ------------------------------
@@ -501,6 +510,9 @@ func TestAsyncRefresh_PublishKeepsSelectionAndFold(t *testing.T) {
 	}
 	want := sel.RoleID
 
+	alphaID := mustOrchID(t, d, "alpha")
+	p.rail.collapsed[alphaID] = true // fold state the operator set
+
 	// A change elsewhere forces a real (non-equal) publish.
 	seedBoundRole(t, d, mustOrchID(t, d, "alpha"), "w9", db.HeraKindWorker, "t-w9-alpha")
 	p.InvalidateChangeGate()
@@ -512,6 +524,7 @@ func TestAsyncRefresh_PublishKeepsSelectionAndFold(t *testing.T) {
 		t.Fatal("selection lost across async publish")
 	}
 	testutil.Equal(t, got.RoleID, want)
+	testutil.Equal(t, p.rail.collapsed[alphaID], true) // fold state survives the publish
 }
 
 func TestAsyncRefresh_BuildPanicIsRecoveredAndRetried(t *testing.T) {
@@ -552,4 +565,51 @@ func TestRebuildSync_ErrorKeepsPreviousModelAndRetries(t *testing.T) {
 
 	testutil.DeepEqual(t, railOrchNames(p), []string{"alpha"}) // not blanked by the failure
 	testutil.Equal(t, p.shouldRebuild(), true)                 // and the gate stays open
+}
+
+// The async path's outcomes are the only way to see it work in ux.log (the A/B
+// measurement reads them), so each one must actually be written.
+func TestAsyncRefresh_LogsEveryOutcome(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	testutil.NoError(t, uxlog.Init(logPath))
+	t.Cleanup(uxlog.Close)
+
+	p, d, q := asyncPage(t)
+	seedTeam(t, d, "alpha")
+
+	buildAndPump(t, p, q) // publish
+	buildAndPump(t, p, q) // equal-drop
+
+	g := gate(p)
+	p.InvalidateChangeGate()
+	p.doRefresh()
+	g.waitStarted(t)
+	p.InvalidateChangeGate() // makes the in-flight build stale
+	close(g.release)
+	q.pump(t) // stale-drop
+
+	// A follow-up build: a cross-connection-free way is to queue rerun directly.
+	g2 := gate(p)
+	p.InvalidateChangeGate()
+	p.doRefresh()
+	g2.waitStarted(t)
+	p.rerun = true
+	close(g2.release)
+	q.pump(t) // publishes, then launches the follow-up
+	g2.waitStarted(t)
+	q.pump(t)
+
+	data, err := os.ReadFile(logPath)
+	testutil.NoError(t, err)
+	log := string(data)
+	for _, want := range []string{
+		"rail build start",
+		"rail refreshed",
+		"async=true",
+		"rail publish dropped: model unchanged",
+		"rail publish dropped: stale",
+		"rail follow-up build",
+	} {
+		testutil.Contains(t, log, want)
+	}
 }

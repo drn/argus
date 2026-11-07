@@ -2,7 +2,7 @@
 
 ### Requirement: An unchanged poll result is not rewritten
 
-The poller SHALL persist a task's polled PR `state` and `url` only when at least one of them differs from the value already stored under namespace `pr`. The comparison and the write SHALL occur inside a single transaction, so there is no window in which a stale read decides the outcome. When both values already match, the poller SHALL commit nothing, so the database's change counter (`PRAGMA data_version`) does not move and the stored `updated_at` of that row is not advanced. Merge notifications SHALL be unaffected: whether a poll resolves a PR as merged is decided from the fetched result, not from whether a write happened. Because `updated_at` of an unchanged `pr` row no longer advances, `GET /api/tasks/{id}/meta` reports the time the value last changed, not the time it was last polled.
+The poller SHALL persist a task's polled PR `state` and `url` only when at least one of them differs from the value already stored under namespace `pr`. The comparison and the write SHALL occur inside a single transaction, so there is no window in which a stale read decides the outcome. When both values already match, the poller SHALL commit nothing, so the database's change counter (`PRAGMA data_version`) does not move and the stored `updated_at` of that row is not advanced. Merge notifications SHALL be unaffected: whether a poll resolves a PR as merged is decided from the fetched result, not from whether a write happened. (A terminal stored state is already excluded from polling, so a merge transition always arrives with a changed value and is written.) Because `updated_at` of an unchanged `pr` row no longer advances, `GET /api/tasks/{id}/meta` reports the time the value last changed, not the time it was last polled.
 
 Derived from: `internal/daemon/daemon.go` (`pollPRStatesOnce`), `internal/db/task_meta.go` (`SetMetaBatchIfChanged`).
 
@@ -21,7 +21,7 @@ Derived from: `internal/daemon/daemon.go` (`pollPRStatesOnce`), `internal/db/tas
 - **WHEN** only the URL differs from the stored value
 - **THEN** both keys are written
 
-#### Scenario: A merge notification does not depend on a write
+#### Scenario: A merge transition still notifies
 
-- **WHEN** a poll resolves a task's PR as merged and the write is skipped because the stored values already match (for example a previous cycle stored them and the daemon stopped before notifying)
-- **THEN** the merge notifications still fire under the existing rules, exactly as if the write had happened
+- **WHEN** a poll resolves a task's PR as merged while the stored state is still open (`awaiting-review`), so the result differs and is written
+- **THEN** both merge notifications fire under the existing rules, exactly as before this change

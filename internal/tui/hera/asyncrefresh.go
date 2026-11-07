@@ -84,6 +84,17 @@ type rebuildResult struct {
 // New() — every rebuild stays synchronous and inline, exactly as before.
 func (p *HeraPage) SetUIQueue(fn func(func())) { p.uiQueue = fn }
 
+// AsyncEnabled reports whether tick-driven rebuilds build off the tview
+// goroutine (a UI queue is wired). Exposed so the App can pin its Run()-time
+// wiring in a test.
+func (p *HeraPage) AsyncEnabled() bool { return p.uiQueue != nil }
+
+// AsyncStats reports how many background builds were launched and how many
+// published a new model. tview goroutine only; for the App's smoke tests.
+func (p *HeraPage) AsyncStats() (builds, published int) {
+	return p.asyncStats.builds, p.asyncStats.published
+}
+
 // captureGate snapshots the state a rebuild started now would be based on.
 func (p *HeraPage) captureGate() gateState {
 	fp, ok := p.dbFingerprint()
