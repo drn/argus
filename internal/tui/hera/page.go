@@ -142,6 +142,20 @@ type HeraPage struct {
 	// mode / tests). See add-diligence-profiles D-VIEW.
 	tierResolver func(*heramodel.RoleView)
 
+	// --- off-thread rebuild state (reduce-hera-rail-rebuild-stalls) ---
+	//
+	// Everything here is read and written ONLY on the tview goroutine; the
+	// background build touches nothing but its rebuildSnapshot. See
+	// asyncrefresh.go.
+	uiQueue      func(func())                         // runs a closure on the tview goroutine; nil = rebuild inline
+	buildFn      func(*rebuildSnapshot) rebuildResult // test seam; nil = buildFromSnapshot
+	gen          uint64                               // bumped by every model replacement / gate invalidation; stale publishes are dropped
+	building     bool                                 // a background build is in flight (single-flight)
+	rerun        bool                                 // a change arrived mid-build: launch exactly one follow-up
+	forceSync    bool                                 // Refresh() is running: rebuild inline, not async
+	lastPristine *heramodel.Model                     // last published model, untouched by the rail, for the equality drop
+	asyncStats   asyncStats
+
 	// Plan-DAG render mode of the Details region (coordinator selection only).
 	// When a coordinator is selected the Details region stacks the read-only
 	// roster (top) over this embedded plan graph (bottom) — both render at once,
@@ -698,59 +712,43 @@ func (p *HeraPage) ScheduleRefresh() { p.refresher.Schedule() }
 // doRefresh's change-detection gate (see shouldRebuild) never silently turns
 // this into a no-op, even for a caller whose preceding write went through the
 // SAME store connection this page reads from (PRAGMA data_version's
-// documented same-connection blind spot — see design.md Decision 5). Callers
+// documented same-connection blind spot — see design.md Decision 5). It also
+// stays SYNCHRONOUS (forceSync): the user's own action must be visible at
+// once, and the rebuild supersedes any background build in flight. Callers
 // that only want a rebuild WHEN something changed should call ScheduleRefresh
-// instead, which is subject to the gate. MUST run on the tview thread.
+// instead, which is subject to the gate and builds off the UI thread when a
+// UI queue is wired. MUST run on the tview thread.
 func (p *HeraPage) Refresh() {
 	p.InvalidateChangeGate()
+	p.forceSync = true
+	defer func() { p.forceSync = false }()
 	p.refresher.Schedule()
 	p.refresher.Flush()
 }
 
-// doRefresh rebuilds the model from the reader and hands it to the rail. In
-// remote mode the reader is nil → heramodel.BuildModel returns an empty model and Draw
-// renders the unavailable banner, so this stays a cheap no-op.
+// doRefresh is one rebuild opportunity (the refresher's callback). In remote
+// mode the reader is nil → heramodel.BuildModel returns an empty model and
+// Draw renders the unavailable banner, so that stays a cheap inline no-op.
+//
+// Tick-driven opportunities with a UI queue wired build on a background
+// goroutine (launchBuild); forced refreshes, remote mode and queue-less pages
+// rebuild inline (rebuildSync). At most one build runs at a time: an
+// opportunity that passes the gate while one is in flight sets rerun, which
+// publish turns into exactly one follow-up build.
 func (p *HeraPage) doRefresh() {
 	if !p.shouldRebuild() {
 		uxlog.Log("[hera-view] rail refresh skipped: no change since last rebuild (fingerprint=%d)", p.lastFingerprint)
 		return
 	}
-	start := time.Now()
-
-	reader := p.reader
-	if reader != nil && p.tasksKnown {
-		reader = &tasksReader{HeraReader: reader, tasks: p.tasks}
-	}
-	m, err := heramodel.BuildModel(reader, p.needsInput, p.sessionIdle, p.sessionRunning, p.sustainedActive)
-	if err != nil {
-		uxlog.Log("[hera-view] rail refresh failed: %v", err)
+	if p.uiQueue == nil || p.reader == nil || p.forceSync {
+		p.rebuildSync()
 		return
 	}
-	// Stamp the diligence-tiering readout (model/effort/warning) onto each role
-	// before handing the model to the rail — local mode only (the resolver is nil
-	// in remote/tests). Runs here, off the Draw path, because resolution reads disk.
-	if p.tierResolver != nil {
-		m.AnnotateRoles(p.tierResolver)
+	if p.building {
+		p.rerun = true
+		return
 	}
-	p.rail.SetModel(m)
-	// Best-effort PR indicator source (namespace "pr", same daemon-populated
-	// cache the task list reads — never fetched here). A read error just leaves
-	// the PR mark off.
-	if p.reader != nil {
-		if pr, perr := p.reader.ListMetaByNamespace("pr"); perr == nil {
-			p.prMeta = pr
-		}
-	}
-	// Feed the same PR cache to the rail so managed rows render a PR indicator
-	// (best-effort; nil just leaves the cells off).
-	p.rail.SetPRMeta(p.prMeta)
-	// SetModel rebuilt the model's backing arrays, so the prior heramodel.Selection
-	// pointers are stale — re-derive and rebind (task IDs usually unchanged, so
-	// bindPane is a no-op and the emulators are preserved).
-	p.applySelection()
-	p.markRebuilt()
-	uxlog.Log("[hera-view] rail refreshed: pinned=%d active=%d archived=%d freelance=%d (remote=%v) took=%s",
-		len(m.Pinned), len(m.Active), len(m.Archived), len(m.Freelance), p.remote, time.Since(start).Round(time.Microsecond))
+	p.launchBuild()
 }
 
 // dataVersioner is implemented by *db.DB (checked via a type assertion, not
@@ -801,22 +799,24 @@ func (p *HeraPage) shouldRebuild() bool {
 		!maps.Equal(p.sustainedActive, p.lastSustainedActive)
 }
 
-// markRebuilt snapshots the state a just-completed rebuild was based on, for
-// the NEXT shouldRebuild call to compare against. The four runtime maps are
-// stored by reference, not deep-cloned: every SetXxx setter always assigns a
-// freshly-allocated map (or nil) rather than mutating one in place (confirmed
-// by reading all four), so the map this rebuild read is never subsequently
-// mutated out from under the stored snapshot — the NEXT tick's setter call
-// replaces p.needsInput etc. with an entirely new map object instead.
-func (p *HeraPage) markRebuilt() {
+// markRebuilt snapshots the page's CURRENT state as the one a rebuild was based
+// on, for the NEXT shouldRebuild call to compare against. Kept for callers that
+// rebuild inline; the rebuild paths themselves use markRebuiltFrom with the
+// state captured BEFORE their build ran, so a write that lands mid-build is
+// never recorded as already seen. The captured runtime maps are private
+// clones, so nothing the UI later does to its own maps can alias them.
+func (p *HeraPage) markRebuilt() { p.markRebuiltFrom(p.captureGate()) }
+
+// markRebuiltFrom records gs as the state the latest rebuild was based on.
+func (p *HeraPage) markRebuiltFrom(gs gateState) {
 	p.fpKnown = true
-	if fp, ok := p.dbFingerprint(); ok {
-		p.lastFingerprint = fp
+	if gs.hasFP {
+		p.lastFingerprint = gs.fp
 	}
-	p.lastNeedsInput = p.needsInput
-	p.lastSessionIdle = p.sessionIdle
-	p.lastSessionRunning = p.sessionRunning
-	p.lastSustainedActive = p.sustainedActive
+	p.lastNeedsInput = gs.needsInput
+	p.lastSessionIdle = gs.sessionIdle
+	p.lastSessionRunning = gs.sessionRunning
+	p.lastSustainedActive = gs.sustainedActive
 }
 
 // InvalidateChangeGate forces the NEXT shouldRebuild call to return true
@@ -829,7 +829,13 @@ func (p *HeraPage) markRebuilt() {
 // though the mutating user already sees their own change instantly via that
 // same forced Refresh() (which bypasses this gate entirely — see design.md
 // Decision 5).
-func (p *HeraPage) InvalidateChangeGate() { p.fpKnown = false }
+//
+// It also advances the generation: a background build that started before the
+// mutation may have read pre-mutation rows, so its publish must be dropped.
+func (p *HeraPage) InvalidateChangeGate() {
+	p.fpKnown = false
+	p.gen++
+}
 
 // Draw computes the three-region layout and paints each region, covering the
 // full bounding rect (DrawBorderedPanel / FillArea) so no stale cells survive —

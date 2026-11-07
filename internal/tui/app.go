@@ -1626,6 +1626,7 @@ func (a *App) Run() error {
 	// nine-times-in-ten false alarm the surface version exists to remove.
 	a.applyStartupSkew()
 	a.restoreLastTab()
+	a.enableAsyncHeraRefresh()
 
 	uxlog.Log("[tui] starting tcell/tview application")
 	return a.tapp.Run()
@@ -5173,6 +5174,19 @@ func (a *App) openPR() {
 // (Ctrl/Shift/Alt+arrow) that the prior pane encoders dropped.
 func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 	return keyenc.Encode(ev)
+}
+
+// enableAsyncHeraRefresh lets the Hera rail build its tick-driven model off the
+// tview goroutine (reduce-hera-rail-rebuild-stalls): the page snapshots on the
+// UI goroutine, builds on a background goroutine and queues the publish back
+// through QueueUpdateDraw. It is wired from Run() — immediately before the
+// event loop starts, the only time a.tapp is guaranteed to be the live app —
+// and NOT from New(): a bare App in a unit test runs no event loop, so a
+// queued publish would never execute and the rail would never update. Those
+// tests keep the synchronous inline path. Remote mode (nil reader) stays inline
+// inside the page itself. a.tapp is read at call time, not captured.
+func (a *App) enableAsyncHeraRefresh() {
+	a.heraPage.SetUIQueue(func(fn func()) { a.tapp.QueueUpdateDraw(fn) })
 }
 
 // restoreLastTab local-only loads the persisted `ui.last_tab` value and, if
