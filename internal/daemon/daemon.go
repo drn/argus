@@ -824,7 +824,12 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 					if t == nil {
 						continue
 					}
-					if werr := d.db.SetMetaBatch(t.ID, "pr", map[string]string{
+					// IfChanged, not SetMetaBatch: an unchanged result must commit
+					// nothing, because every commit bumps data_version and forces
+					// every TUI's Hera rail to rebuild (one commit per task per
+					// minute before this). The merge notifications below key off
+					// the fetched result, not off whether a write happened.
+					if _, werr := d.db.SetMetaBatchIfChanged(t.ID, "pr", map[string]string{
 						"state": res.State.String(),
 						"url":   res.URL,
 					}); werr != nil {

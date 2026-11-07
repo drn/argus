@@ -86,6 +86,69 @@ func (d *DB) SetMetaBatch(taskID, namespace string, entries map[string]string) e
 	})
 }
 
+// SetMetaBatchIfChanged is SetMetaBatch that commits nothing when every
+// (key,value) already holds exactly the stored value. The comparison runs in
+// the same transaction as the write, so a concurrent writer cannot make the
+// skip decision stale. It reports whether it wrote. A skipped call leaves the
+// rows' updated_at untouched and — because nothing commits — does not move the
+// database's PRAGMA data_version, which is the point: the PR poller used to
+// rewrite unchanged pr/state+pr/url rows every cycle, and every such commit
+// forced the Hera rail to rebuild. A key absent from the table counts as
+// changed. Validation is identical to SetMetaBatch.
+func (d *DB) SetMetaBatchIfChanged(taskID, namespace string, entries map[string]string) (bool, error) {
+	if len(entries) == 0 {
+		return false, nil
+	}
+	if taskID == "" || namespace == "" {
+		return false, ErrMetaInvalidKey
+	}
+	keys := make([]string, 0, len(entries))
+	for k := range entries {
+		if k == "" {
+			return false, ErrMetaInvalidKey
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	now := formatTime(time.Now())
+	wrote := false
+	err := d.WithTx(func(tx *sql.Tx) error {
+		changed := false
+		for _, k := range keys {
+			var cur string
+			qerr := tx.QueryRow(
+				`SELECT value FROM task_meta WHERE task_id=? AND namespace=? AND key=?`,
+				taskID, namespace, k).Scan(&cur)
+			if qerr == sql.ErrNoRows || (qerr == nil && cur != entries[k]) {
+				changed = true
+				break
+			}
+			if qerr != nil {
+				return fmt.Errorf("read meta for compare: %w", qerr)
+			}
+		}
+		if !changed {
+			return nil // nothing written, tx rolls back empty (no commit of changes)
+		}
+		stmt, err := tx.Prepare(
+			`INSERT INTO task_meta (task_id, namespace, key, value, updated_at) VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(task_id, namespace, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		)
+		if err != nil {
+			return fmt.Errorf("prepare batch: %w", err)
+		}
+		defer stmt.Close() //nolint:errcheck
+		for _, k := range keys {
+			if _, err := stmt.Exec(taskID, namespace, k, entries[k], now); err != nil {
+				return fmt.Errorf("set meta batch: %w", err)
+			}
+		}
+		wrote = true
+		return nil
+	})
+	return wrote && err == nil, err
+}
+
 // ListMeta returns every metadata row for taskID. When namespace is non-empty
 // the result is scoped to that namespace only; otherwise rows from every
 // namespace are returned. Results are ordered by (namespace, key) so callers

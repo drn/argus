@@ -330,3 +330,116 @@ func TestDB_TaskMeta_ErrorBranchesAfterClose(t *testing.T) {
 		}
 	})
 }
+
+// dvDB opens a second connection to the same file so data_version (which is
+// blind to a connection's own writes) can observe the first one's commits.
+func dvPair(t *testing.T) (writer, observer *DB) {
+	t.Helper()
+	path := t.TempDir() + "/data.sql"
+	w, err := Open(path)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = w.Close() })
+	o, err := Open(path)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = o.Close() })
+	return w, o
+}
+
+func TestDB_SetMetaBatchIfChanged(t *testing.T) {
+	t.Run("identical values commit nothing", func(t *testing.T) {
+		w, o := dvPair(t)
+		entries := map[string]string{"state": "none", "url": ""}
+		wrote, err := w.SetMetaBatchIfChanged("t1", "pr", entries)
+		testutil.NoError(t, err)
+		testutil.Equal(t, wrote, true) // first write: row absent
+
+		before, err := ListMetaEntry(t, w, "t1", "pr", "state")
+		testutil.NoError(t, err)
+		dv1, err := o.DataVersion()
+		testutil.NoError(t, err)
+		time.Sleep(2 * time.Millisecond)
+
+		wrote, err = w.SetMetaBatchIfChanged("t1", "pr", entries)
+		testutil.NoError(t, err)
+		testutil.Equal(t, wrote, false)
+
+		dv2, err := o.DataVersion()
+		testutil.NoError(t, err)
+		testutil.Equal(t, dv2, dv1) // no commit, no data_version bump
+		after, err := ListMetaEntry(t, w, "t1", "pr", "state")
+		testutil.NoError(t, err)
+		testutil.Equal(t, after.UpdatedAt, before.UpdatedAt)
+	})
+
+	t.Run("old SetMetaBatch always commits", func(t *testing.T) {
+		w, o := dvPair(t)
+		entries := map[string]string{"state": "none", "url": ""}
+		testutil.NoError(t, w.SetMetaBatch("t1", "pr", entries))
+		dv1, _ := o.DataVersion()
+		testutil.NoError(t, w.SetMetaBatch("t1", "pr", entries))
+		dv2, _ := o.DataVersion()
+		if dv2 == dv1 {
+			t.Fatal("control: SetMetaBatch of identical values should still bump data_version")
+		}
+	})
+
+	t.Run("changed state is written", func(t *testing.T) {
+		w, _ := dvPair(t)
+		_, err := w.SetMetaBatchIfChanged("t1", "pr", map[string]string{"state": "none", "url": ""})
+		testutil.NoError(t, err)
+		wrote, err := w.SetMetaBatchIfChanged("t1", "pr", map[string]string{"state": "awaiting-review", "url": "https://x/1"})
+		testutil.NoError(t, err)
+		testutil.Equal(t, wrote, true)
+		got, err := w.ListMetaByNamespace("pr")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got["t1"]["state"], "awaiting-review")
+		testutil.Equal(t, got["t1"]["url"], "https://x/1")
+	})
+
+	t.Run("changed url alone is written", func(t *testing.T) {
+		w, _ := dvPair(t)
+		_, _ = w.SetMetaBatchIfChanged("t1", "pr", map[string]string{"state": "draft", "url": "a"})
+		wrote, err := w.SetMetaBatchIfChanged("t1", "pr", map[string]string{"state": "draft", "url": "b"})
+		testutil.NoError(t, err)
+		testutil.Equal(t, wrote, true)
+		got, _ := w.ListMetaByNamespace("pr")
+		testutil.Equal(t, got["t1"]["url"], "b")
+	})
+
+	t.Run("a new key on an existing row is written", func(t *testing.T) {
+		w, _ := dvPair(t)
+		_, _ = w.SetMetaBatchIfChanged("t1", "pr", map[string]string{"state": "draft"})
+		wrote, err := w.SetMetaBatchIfChanged("t1", "pr", map[string]string{"state": "draft", "url": ""})
+		testutil.NoError(t, err)
+		testutil.Equal(t, wrote, true)
+	})
+
+	t.Run("validation matches SetMetaBatch", func(t *testing.T) {
+		w, _ := dvPair(t)
+		_, err := w.SetMetaBatchIfChanged("", "pr", map[string]string{"a": "b"})
+		testutil.ErrorIs(t, err, ErrMetaInvalidKey)
+		_, err = w.SetMetaBatchIfChanged("t1", "", map[string]string{"a": "b"})
+		testutil.ErrorIs(t, err, ErrMetaInvalidKey)
+		_, err = w.SetMetaBatchIfChanged("t1", "pr", map[string]string{"": "b"})
+		testutil.ErrorIs(t, err, ErrMetaInvalidKey)
+		wrote, err := w.SetMetaBatchIfChanged("t1", "pr", nil)
+		testutil.NoError(t, err)
+		testutil.Equal(t, wrote, false)
+	})
+}
+
+// ListMetaEntry returns one (task, ns, key) entry (test helper).
+func ListMetaEntry(t *testing.T, d *DB, taskID, ns, key string) (TaskMetaEntry, error) {
+	t.Helper()
+	entries, err := d.ListMeta(taskID, ns)
+	if err != nil {
+		return TaskMetaEntry{}, err
+	}
+	for _, e := range entries {
+		if e.Key == key {
+			return e, nil
+		}
+	}
+	t.Fatalf("no entry %s/%s/%s", taskID, ns, key)
+	return TaskMetaEntry{}, nil
+}

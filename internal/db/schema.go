@@ -685,6 +685,11 @@ func (d *DB) createHeraTables() error {
 		-- subquery (5a-cleanup-tree-view) — NOT partial (unlike the live-* indexes
 		-- above), since that query deliberately reaches ended/archived/nuked rows too.
 		CREATE INDEX IF NOT EXISTS idx_hera_bindings_task_started ON hera_bindings(argus_task_id, started_at);
+		-- Role-keyed lookups/aggregates over ALL bindings, ended included (the
+		-- per-orchestrator cost sums that run on every rail rebuild). NOT partial:
+		-- the idx_hera_bindings_live_role index above only covers ended_at IS NULL,
+		-- so without this each call scanned the whole table (reduce-hera-rail-rebuild-stalls).
+		CREATE INDEX IF NOT EXISTS idx_hera_bindings_role ON hera_bindings(role_id);
 
 		CREATE TABLE IF NOT EXISTS hera_role_status (
 			role_id    INTEGER PRIMARY KEY REFERENCES hera_roles(id) ON DELETE CASCADE,
