@@ -142,6 +142,12 @@ type HeraPage struct {
 	// mode / tests). See add-diligence-profiles D-VIEW.
 	tierResolver func(*heramodel.RoleView)
 
+	// tierResolverFactory, when set, is called ONCE per doRefresh build and the
+	// closure it returns annotates every role of that build — so per-build work
+	// (config snapshot, profile loads) is shared across roles instead of repeated
+	// per role. It takes precedence over tierResolver. See hera-tier-resolve-once.
+	tierResolverFactory func() (annotate func(*heramodel.RoleView), done func())
+
 	// --- off-thread rebuild state (reduce-hera-rail-rebuild-stalls) ---
 	//
 	// Everything here is read and written ONLY on the tview goroutine; the
@@ -572,6 +578,15 @@ func (p *HeraPage) SetRailStateStore(s RailStateStore) { p.rail.SetStateStore(s)
 // path, because resolution reads disk (the pure projection cannot). Remote mode
 // never calls it, so the plan view then shows archetype only (no model/warning).
 func (p *HeraPage) SetTierResolver(fn func(*heramodel.RoleView)) { p.tierResolver = fn }
+
+// SetTierResolverFactory wires the per-build variant of SetTierResolver: the
+// factory runs once per doRefresh and its annotate closure stamps every role of
+// that build; done (optional) runs after the last role, for one summary log line.
+// Nothing the closure memoizes may outlive the build (no cross-build cache), so settings/profile edits show on the next build. Takes precedence over
+// SetTierResolver.
+func (p *HeraPage) SetTierResolverFactory(fn func() (annotate func(*heramodel.RoleView), done func())) {
+	p.tierResolverFactory = fn
+}
 
 // Machine exposes the focus machine (test seam + 6b wiring). Not named Focus()
 // because that collides with tview.Primitive's Focus(func(tview.Primitive)).

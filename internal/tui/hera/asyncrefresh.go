@@ -60,6 +60,10 @@ type rebuildSnapshot struct {
 	tasks        []*model.Task // private value copies (nil unless tasksKnown)
 	tasksKnown   bool
 	tierResolver func(*heramodel.RoleView)
+	// tierResolverFactory is invoked ONCE per build, on whichever goroutine runs
+	// buildFromSnapshot; the closure it returns (and any memo inside it) is
+	// confined to that build, so it needs no synchronization.
+	tierResolverFactory func() (annotate func(*heramodel.RoleView), done func())
 
 	// Last published state, for the equality drop. Replaced, never mutated, so
 	// reading them from the build goroutine is safe; the generation check at
@@ -111,13 +115,14 @@ func (p *HeraPage) captureGate() gateState {
 // takeSnapshot builds the immutable input for one rebuild. tview goroutine only.
 func (p *HeraPage) takeSnapshot() *rebuildSnapshot {
 	s := &rebuildSnapshot{
-		gen:          p.gen,
-		gate:         p.captureGate(),
-		reader:       p.reader,
-		tasksKnown:   p.tasksKnown,
-		tierResolver: p.tierResolver,
-		prevPristine: p.lastPristine,
-		prevPRMeta:   p.prMeta,
+		gen:                 p.gen,
+		gate:                p.captureGate(),
+		reader:              p.reader,
+		tasksKnown:          p.tasksKnown,
+		tierResolver:        p.tierResolver,
+		tierResolverFactory: p.tierResolverFactory,
+		prevPristine:        p.lastPristine,
+		prevPRMeta:          p.prMeta,
 	}
 	if p.tasksKnown {
 		s.tasks = make([]*model.Task, len(p.tasks))
@@ -145,7 +150,13 @@ func (p *HeraPage) buildFromSnapshot(s *rebuildSnapshot) rebuildResult {
 		return rebuildResult{err: err, buildDur: time.Since(start)}
 	}
 	// Tier annotation reads config and disk; it runs here, off the Draw path.
-	if s.tierResolver != nil {
+	if s.tierResolverFactory != nil {
+		annotate, done := s.tierResolverFactory()
+		m.AnnotateRoles(annotate)
+		if done != nil {
+			done()
+		}
+	} else if s.tierResolver != nil {
 		m.AnnotateRoles(s.tierResolver)
 	}
 	res := rebuildResult{model: m}
