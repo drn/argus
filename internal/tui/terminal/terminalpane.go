@@ -2967,9 +2967,18 @@ func UvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 			style = style.Underline(ulStyle)
 		}
 	}
-	// Hyperlinks (OSC 8).
-	if cell.Link.URL != "" {
-		style = style.Url(cell.Link.URL)
+	return withHyperlink(style, cell.Link)
+}
+
+// withHyperlink adds an OSC-8 hyperlink's URL — and its id param, so the host
+// terminal treats a link wrapped across rows as one link — to style.
+func withHyperlink(style tcell.Style, link uv.Link) tcell.Style {
+	if link.URL == "" {
+		return style
+	}
+	style = style.Url(link.URL)
+	if id := oscfilter.HyperlinkID(link.Params); id != "" {
+		style = style.UrlId(id)
 	}
 	return style
 }
