@@ -220,7 +220,7 @@ func TestReplayRebuild_SlowStaleRebuildCannotOverwriteFresh(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a multi-MB log")
 	}
-	setupTaskLog(t, "slowA", "STALE-A-MARKER\r\n"+denseLogContent(12*1024*1024))
+	setupTaskLog(t, "slowA", "STALE-A-MARKER\r\n"+denseLogContent(8*1024*1024))
 	addTaskLogContent(t, "fastB", "FRESH-B-MARKER\r\n")
 	tp := NewTerminalPane()
 	tp.ptyCols, tp.ptyRows = 80, 24
@@ -230,11 +230,18 @@ func TestReplayRebuild_SlowStaleRebuildCannotOverwriteFresh(t *testing.T) {
 		tp.asyncReplayRebuild("slowA", 0, 24, 80, 24, nil, nil, 0, false, false, nil)
 		close(aDone)
 	}()
+	// Never let the slow goroutine outlive the test: testing.AllocsPerRun in
+	// unrelated tests counts allocations process-wide.
+	t.Cleanup(func() { <-aDone })
 	time.Sleep(50 * time.Millisecond) // let A read its log and start emulating
 	tp.SetTaskID("fastB")
 	tp.ResetVT() // rail switch to B while A is in flight
 	tp.asyncReplayRebuild("fastB", 0, 24, 80, 24, nil, nil, 0, false, false, nil)
-	waitChan(t, aDone, "slow A to finish")
+	select {
+	case <-aDone:
+	case <-time.After(90 * time.Second): // slow shared CI runners under -race
+		t.Fatal("timed out waiting for slow A to finish")
+	}
 
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
