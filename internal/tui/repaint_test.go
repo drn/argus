@@ -28,13 +28,13 @@ func TestRepaintLeadingEdgeCapAndRewake(t *testing.T) {
 		synctest.Wait()
 		testutil.Equal(t, len(starts), 1) // the first byte after quiet draws immediately
 		first := <-starts
-		time.Sleep(repaintInterval - time.Nanosecond)
+		time.Sleep(outputRepaintInterval - time.Nanosecond)
 		synctest.Wait()
 		testutil.Equal(t, len(starts), 0)
 		time.Sleep(time.Nanosecond)
 		synctest.Wait()
 		testutil.Equal(t, len(starts), 1) // output during Draw survives, burst collapses
-		testutil.Equal(t, (<-starts).Sub(first), repaintInterval)
+		testutil.Equal(t, (<-starts).Sub(first), outputRepaintInterval)
 		time.Sleep(time.Second)
 		synctest.Wait()
 		testutil.Equal(t, len(starts), 0) // no periodic draws while quiet
@@ -110,9 +110,9 @@ func TestRepaintCapAfterSlowDraw(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		synctest.Wait()
 		testutil.Equal(t, len(starts), 0)
-		time.Sleep(repaintInterval)
+		time.Sleep(outputRepaintInterval)
 		synctest.Wait()
-		testutil.Equal(t, (<-starts).Sub(first), 100*time.Millisecond+repaintInterval)
+		testutil.Equal(t, (<-starts).Sub(first), 100*time.Millisecond+outputRepaintInterval)
 		close(done)
 		synctest.Wait()
 	})

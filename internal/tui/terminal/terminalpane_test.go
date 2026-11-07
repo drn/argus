@@ -4876,3 +4876,26 @@ func TestTerminalPane_RenderDiff_RewrapsOnWidthChange(t *testing.T) {
 		}
 	}
 }
+
+// A paste is user input that never reaches the app's key capture; the pane must
+// report it so the echo repaints at the fast cap. A paste with no live session
+// forwards nothing and must not claim to be input.
+func TestTerminalPane_PasteHandler_ReportsUserInput(t *testing.T) {
+	tp := NewTerminalPane()
+	calls := 0
+	tp.OnUserInput = func() { calls++ }
+
+	tp.PasteHandler()("dead", func(tview.Primitive) {})
+	if calls != 0 {
+		t.Fatalf("paste without a live session reported input %d times", calls)
+	}
+
+	tp.SetSession(&pasteRecorder{mockAdapter: mockAdapter{alive: true}})
+	tp.PasteHandler()("alive", func(tview.Primitive) {})
+	if calls != 1 {
+		t.Fatalf("paste to a live session reported input %d times, want 1", calls)
+	}
+
+	tp.OnUserInput = nil // an unwired pane must not panic
+	tp.PasteHandler()("again", func(tview.Primitive) {})
+}
