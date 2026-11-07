@@ -133,7 +133,7 @@ func TestRepaintDiagnosticsAndFailure(t *testing.T) {
 				}
 				testutil.Equal(t, len(lines), want)
 				if enabled {
-					testutil.Equal(t, <-lines, "[repaint] wakes=1 frames=1 window_s=30")
+					testutil.Equal(t, <-lines, "[repaint] wakes=1 frames=1 echo_frames=0 output_frames=1 window_s=30")
 				}
 				time.Sleep(30 * time.Second)
 				synctest.Wait()

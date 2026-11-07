@@ -4050,6 +4050,7 @@ func (a *App) activeKeymap() *keymap.Keymap {
 }
 
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
+	a.repaint.noteKey() // echo frames keep the fast cap; nil-safe before the pump exists
 	var entered time.Time
 	if a.typing != nil {
 		entered = a.typing.now()

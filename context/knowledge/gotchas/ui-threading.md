@@ -4,6 +4,8 @@
 
 - **Keep the terminfo TTY size cache below the screen layer: Clear/Draw/Show still run normally.** tcell v2.13.8 issues a terminal-size ioctl on every Show; resolve terminfo before opening the TTY, since its stock Close cannot release a device that has not been started.
 
+- **Output-only repaints coalesce at 40ms (25fps); only echo frames keep the 8ms cap, and "echo" means a key reached `handleGlobalKey` or a pane forwarded a paste in the last 150ms.** `repaintPump.noteKey` stamps an atomic and pokes a size-1 channel so a throttle already sleeping out 40ms is recomputed with the 8ms interval, otherwise an echo arriving mid-throttle waits up to 40ms. Bracketed paste bypasses `InputCapture`, so `TerminalPane.PasteHandler` calls `OnUserInput` (wired in `startOutputRepaint` for the Tasks pane and both Hera panes, and only when a live session takes the paste). Keep the single-slot wake channel: it is what guarantees the final output of a burst paints. The `[repaint]` diagnostic line splits `echo_frames` from `output_frames` (classified at draw time); when judging CPU, measure with `ARGUS_PAINT_WORKLOAD=1` (a polling harness inflated the first baseline by about 4 points).
+
 - **Quit through `stopTUI`, which stops output wakes and lets the single queued repaint return before stopping tview.** `QueueUpdateDraw` is synchronous and cannot be cancelled after enqueue; stopping the event loop first would strand the pump.
 
 - **Output subscriptions follow panes actually drawn, including Hera fullscreen, rather than tab or focus guesses.** The shared pump coalesces notifications before a draw, preserving output that arrives during it; its writers never block, and each Done watcher is cancelled when its pane hides or rebinds.
