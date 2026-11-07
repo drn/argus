@@ -513,3 +513,43 @@ func TestAsyncRefresh_PublishKeepsSelectionAndFold(t *testing.T) {
 	}
 	testutil.Equal(t, got.RoleID, want)
 }
+
+func TestAsyncRefresh_BuildPanicIsRecoveredAndRetried(t *testing.T) {
+	p, d, q := asyncPage(t)
+	seedTeam(t, d, "alpha")
+	p.buildFn = func(*rebuildSnapshot) rebuildResult { panic("kaboom") }
+
+	p.doRefresh()
+	q.pump(t) // the publish still arrives, carrying the error
+
+	testutil.Equal(t, p.asyncStats.errors, 1)
+	testutil.Equal(t, p.building, false) // single-flight flag released
+	testutil.Equal(t, p.shouldRebuild(), true)
+
+	p.buildFn = nil // the next opportunity builds normally
+	p.doRefresh()
+	q.pump(t)
+	testutil.DeepEqual(t, railOrchNames(p), []string{"alpha"})
+}
+
+// failingReader makes the model projection fail at its first read.
+type failingReader struct{ heramodel.HeraReader }
+
+func (failingReader) ListHeraOrchestrators(bool) ([]*db.HeraOrchestrator, error) {
+	return nil, errBuildForTest
+}
+
+func TestRebuildSync_ErrorKeepsPreviousModelAndRetries(t *testing.T) {
+	d := openFileDB(t)
+	seedTeam(t, d, "alpha")
+	p := NewHeraPage(d)
+	p.doRefresh() // inline (no queue): populates the rail
+	testutil.DeepEqual(t, railOrchNames(p), []string{"alpha"})
+
+	p.reader = failingReader{HeraReader: d}
+	p.InvalidateChangeGate()
+	p.doRefresh()
+
+	testutil.DeepEqual(t, railOrchNames(p), []string{"alpha"}) // not blanked by the failure
+	testutil.Equal(t, p.shouldRebuild(), true)                 // and the gate stays open
+}

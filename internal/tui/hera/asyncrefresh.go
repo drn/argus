@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"fmt"
 	"maps"
 	"reflect"
 	"time"
@@ -204,7 +205,7 @@ func (p *HeraPage) launchBuild() {
 	}
 	queue := p.uiQueue
 	go func() {
-		res := build(snap)
+		res := safeBuild(build, snap)
 		queue(func() { p.publish(snap, res) })
 	}()
 }
@@ -239,4 +240,18 @@ func (p *HeraPage) publish(snap *rebuildSnapshot, res rebuildResult) {
 		uxlog.Log("[hera-view] rail follow-up build: change arrived during the previous build")
 		p.launchBuild()
 	}
+}
+
+// safeBuild runs a build and turns a panic into an error result. The build runs
+// on its own goroutine, where an unrecovered panic would take the whole TUI
+// down (on the tview goroutine it would not have been any safer, but the other
+// hera background work is panic-guarded — BUG-062 — and a failed rail refresh
+// must degrade to "retry next tick", not "crash").
+func safeBuild(build func(*rebuildSnapshot) rebuildResult, snap *rebuildSnapshot) (res rebuildResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = rebuildResult{err: fmt.Errorf("rail build panicked: %v", r)}
+		}
+	}()
+	return build(snap)
 }
