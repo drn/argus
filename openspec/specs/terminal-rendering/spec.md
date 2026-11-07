@@ -792,7 +792,7 @@ A redundant attach decision SHALL clear existing repair status for that task acr
 
 ### Requirement: Visible terminal panes repaint when output arrives
 
-The TUI SHALL repaint when output arrives for a session shown in a terminal pane that was drawn in the most recent frame, covering the Tasks agent view pane and both Hera panes. It SHALL NOT rely on a timer to paint that output. Repaints SHALL be coalesced under a minimum frame interval of about 8ms, and at most one such repaint SHALL be queued at a time. The first output after a quiet period SHALL queue a repaint immediately. The output notification SHALL NOT block the session's stream reader. This mechanism SHALL NOT call `screen.Sync()`.
+The TUI SHALL repaint when output arrives for a session shown in a terminal pane that was drawn in the most recent frame, covering the Tasks agent view pane and both Hera panes. It SHALL NOT rely on a timer to paint that output. Repaints SHALL be coalesced, and at most one such repaint SHALL be queued at a time. A repaint within 150ms after a key event reached the global key handler or a pane forwarded a paste to a live session (an echo frame) SHALL use a minimum frame interval of about 8ms; every other repaint (an output-only frame) SHALL use a minimum frame interval of about 40ms. A key event arriving while the pump is waiting out an output-only interval SHALL shorten that wait to the echo interval. The first output after a quiet period longer than the applicable interval SHALL queue a repaint immediately. Output that arrives during a wait or during a repaint SHALL NOT be lost: the last output of a burst SHALL paint no later than one output-only interval after it arrived. The output notification and the key signal SHALL NOT block the session's stream reader or the UI goroutine. This mechanism SHALL NOT call `screen.Sync()`.
 
 #### Scenario: Echo paints without waiting for a timer
 
@@ -804,10 +804,30 @@ The TUI SHALL repaint when output arrives for a session shown in a terminal pane
 - **WHEN** a session bound to a visible Hera coordinator or agent pane produces output
 - **THEN** that pane repaints the same way as the Tasks agent view
 
-#### Scenario: A burst of output is coalesced
+#### Scenario: Output-only frames coalesce at the slower rate
 
-- **WHEN** a session produces many chunks within one frame interval
-- **THEN** no more than one repaint starts in that interval, and output arriving during a repaint causes one further repaint
+- **WHEN** a session streams output continuously and no key event has occurred in the last 150ms
+- **THEN** no more than one repaint starts in any 40ms interval
+
+#### Scenario: Keystroke echo keeps the fast cap
+
+- **WHEN** a key event occurs while a session streams output and the echo arrives
+- **THEN** the echo repaints within the 8ms interval of the previous repaint, not the 40ms one
+
+#### Scenario: A paste echo keeps the fast cap
+
+- **WHEN** a paste is forwarded to a live session in a visible pane and its echo arrives
+- **THEN** the echo repaints at the 8ms interval, the same as a keystroke echo
+
+#### Scenario: A key shortens a throttle in progress
+
+- **WHEN** the pump is waiting out an output-only interval and a key event arrives
+- **THEN** the remaining wait is recomputed using the 8ms interval
+
+#### Scenario: The end of a burst always paints
+
+- **WHEN** a burst of output ends while the pump is throttling
+- **THEN** one further repaint paints the final output no later than one output-only interval after it arrived
 
 #### Scenario: Output for a session not on screen causes no repaint
 
@@ -833,6 +853,11 @@ The TUI SHALL repaint when output arrives for a session shown in a terminal pane
 
 - **WHEN** a session shown in a visible pane ends
 - **THEN** one repaint is queued so the finished state appears without waiting for the tick
+
+#### Scenario: Frames are counted by kind
+
+- **WHEN** the typing log is enabled and the pump draws
+- **THEN** the periodic `[repaint]` line reports separate counts of echo frames and output-only frames
 
 ### Requirement: Terminal size queries are bounded without delaying resize notifications
 
